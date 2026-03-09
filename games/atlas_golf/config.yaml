@@ -1,0 +1,14 @@
+regions:
+  meter_zone: [955, 735, 100, 830]
+  indicator_left: [965, 735, 20, 830]
+  four_point_zone: [965, 787, 50, 30]
+  two_point_zone: [965, 823, 50, 60]
+
+colors:
+  indicator:
+    lower: [230, 230, 230]
+    upper: [236, 236, 236]
+
+tap_location:
+  x: 641
+  y: 2215
