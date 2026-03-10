@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import cv2
+import random
 
 from framework.device import MyPhone
 from framework.vision import Vision
@@ -10,7 +11,7 @@ class AtlasGolfBot:
     def __init__(self, config_path: str):
         self.config = load_config(config_path)
         self.phone = MyPhone()
-        self.vision = Vision(self.phone, self.config)
+        # self.vision = Vision(self.phone, self.config)
 
     def detect_indicator_center(self, img):
         """
@@ -123,4 +124,32 @@ class AtlasGolfBot:
             cv2.imshow("Atlas Golf Bot HUD", frame_small)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                break 
+
+
+    def start_naive_approach(self):
+        start_time = time.time()
+        print("Connecting to device...")
+        self.phone.connect_device()
+        print("Connected. Starting Atlas Golf bot...")
+        
+        now = time.time()
+        connection_duration = now - start_time
+        print(f"Start Time: {start_time:.1f} | Connection Duration: {connection_duration}")
+
+        # todo: somehow need to detect accurate timing for first tap.
+        last_tap = start_time
+        time_delays = [10, 9, 6, 4, 3]
+        for delay in time_delays:
+            time.sleep(delay)
+            now = time.time()
+            time_since_start = now - start_time
+            time_since_last_tap = now - last_tap
+            last_tap = now
+
+            self.phone.tap(
+                self.config["tap_location"]["x"] + random.randint(-10, 10), 
+                self.config["tap_location"]["y"] + random.randint(-10, 10)
+            )
+            print(f"Time Since Start: {time_since_start:.3f} | Time Since Last Tap: {time_since_last_tap:.3f}")
+
