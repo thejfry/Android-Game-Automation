@@ -65,7 +65,7 @@ class MyPhone:
         for digit in pin:
             x, y = self.PIN_PAD_NUMBER_POSITIONS[digit]
             self.tap(x, y)
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         # Press enter
         self.tap(820, 1880)
