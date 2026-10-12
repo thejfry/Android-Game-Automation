@@ -3,7 +3,7 @@ import unittest
 import cv2
 import numpy as np
 
-from .perception import TerraminerGoldPerception
+from .perception import TilePortDetector
 
 
 class TileMaskPerceptionTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class TileMaskPerceptionTests(unittest.TestCase):
         cv2.rectangle(self.frame, (x1, y1), (x2, y2), self.gold, thickness=-1)
 
     def _detect(self):
-        return TerraminerGoldPerception._detect_tile_masks(
+        return TilePortDetector._detect_tile_masks(
             self.frame,
             (0, 0, 400, 400),
             4,
@@ -51,7 +51,7 @@ class TileMaskPerceptionTests(unittest.TestCase):
             edge_magnitude[sample_start:sample_end, edge_x] = 100
             edges[sample_start:sample_end, edge_x] = True
 
-        confidence = TerraminerGoldPerception._connected_port_confidence(
+        confidence = TilePortDetector._connected_port_confidence(
             component,
             0,
             (gradient_x, gradient_y, edge_magnitude, edges),
@@ -74,7 +74,7 @@ class TileMaskPerceptionTests(unittest.TestCase):
                 edge_magnitude[sample_start:sample_end, edge_x] = 100
                 edges[sample_start:sample_end, edge_x] = True
 
-        confidence = TerraminerGoldPerception._connected_port_confidence(
+        confidence = TilePortDetector._connected_port_confidence(
             component,
             0,
             (gradient_x, gradient_y, edge_magnitude, edges),

@@ -4,13 +4,11 @@ import logging
 import random
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
-from game_automation.core.agent import BaseAgent
-from game_automation.core.device import MyPhone
-from game_automation.core.events import PerceptionState, StateBus
-
-from .perception import PORT_CONFIDENCE_THRESHOLD, TerraminerBoard
+from .perception import BoardObservation, PORT_CONFIDENCE_THRESHOLD, TerraminerBoard
 from .solver import MazeSolution, MazeSolver
+from .tap_executor import TapExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -19,20 +17,25 @@ TAP_POSITION_JITTER_FRACTION = 0.05
 TAP_INTERVAL_JITTER_FRACTION = 0.2
 
 
-class TerraminerGoldAgent(BaseAgent):
+@dataclass(frozen=True)
+class SolveResult:
+    solution: MazeSolution
+    executed: bool
+
+
+class TerraminerGoldAgent:
     def __init__(
         self,
-        phone: MyPhone,
-        state_bus: StateBus,
+        tap_executor: TapExecutor,
         tap_interval: float = 0.04,
         verification_attempts: int = 3,
         dry_run: bool = False,
     ):
-        super().__init__(phone, state_bus, tick_hz=2)
         if tap_interval < 0:
             raise ValueError("Tap interval must not be negative.")
         if verification_attempts < 1:
             raise ValueError("Verification attempts must be positive.")
+        self.tap_executor = tap_executor
         self.tap_interval = tap_interval
         self.verification_attempts = verification_attempts
         self.dry_run = dry_run
@@ -49,28 +52,27 @@ class TerraminerGoldAgent(BaseAgent):
         self._attempts = 0
         self._finished = False
         self._last_solution = None
-        self.running = False
 
-    def tick(
+    def solve(
         self,
-        state: PerceptionState,
+        observation: BoardObservation,
         before_execution: Callable[[], None] | None = None,
-    ):
+    ) -> SolveResult | None:
         if self._finished:
-            return
-        board = state.data.get("board")
-        if not isinstance(board, TerraminerBoard):
-            raise ValueError("Perception state does not contain a detected Terraminer board.")
+            return None
+        board = observation.board
 
         if self._attempts:
-            if self._is_path_connected(board, self._last_solution):
+            if (
+                self._last_solution is not None
+                and self.verify_route(board, self._last_solution)
+            ):
                 logger.info(
                     "Route geometry verified against the fresh frame; "
                     "game-level success is not independently detected."
                 )
                 self._finished = True
-                self.running = False
-                return
+                return SolveResult(self._last_solution, False)
             if self._attempts >= self.verification_attempts:
                 logger.error(
                     "Route did not verify after %d solve attempts.",
@@ -144,8 +146,8 @@ class TerraminerGoldAgent(BaseAgent):
                     action.target_mask,
                 )
             self._finished = True
-            self.running = False
-            return
+            self._last_solution = solution
+            return SolveResult(solution, False)
 
         if solution.tap_count == 0 and not self._route_has_confident_ports(board, solution):
             logger.error(
@@ -168,7 +170,8 @@ class TerraminerGoldAgent(BaseAgent):
             len(solution.path),
             solution.tap_count,
         )
-        self._execute_solution(board, solution, state.data["frame_size"])
+        self._execute_solution(board, solution, observation.frame_size)
+        return SolveResult(solution, True)
 
     def _execute_solution(
         self,
@@ -176,32 +179,28 @@ class TerraminerGoldAgent(BaseAgent):
         solution: MazeSolution,
         frame_size: tuple[int, int],
     ):
-        frame_width, frame_height = frame_size
-        if self.phone.resolution is None:
-            raise RuntimeError("Device resolution is unavailable.")
-        device_width, device_height = self.phone.resolution
         left, top, right, bottom = board.bounds
-        cell_width = (right - left) * device_width / frame_width / board.size
-        cell_height = (bottom - top) * device_height / frame_height / board.size
-        jitter_x = cell_width * TAP_POSITION_JITTER_FRACTION
-        jitter_y = cell_height * TAP_POSITION_JITTER_FRACTION
+        cell_width = (right - left) / board.size
+        cell_height = (bottom - top) / board.size
         for action in solution.actions:
             x, y = board.center(action.row, action.column)
-            x = round(x * device_width / frame_width)
-            y = round(y * device_height / frame_height)
             if action.turns:
                 logger.info(
-                    "Rotating tile (%d, %d) by %d quarter-turn(s) at device position (%d, %d).",
+                    "Rotating tile (%d, %d) by %d quarter-turn(s).",
                     action.row,
                     action.column,
                     action.turns,
-                    x,
-                    y,
                 )
             for tap_index in range(action.turns):
-                tap_x = round(x + random.uniform(-jitter_x, jitter_x))
-                tap_y = round(y + random.uniform(-jitter_y, jitter_y))
-                self.phone.tap(tap_x, tap_y)
+                self.tap_executor.tap_point(
+                    (x, y),
+                    frame_size,
+                    (
+                        cell_width * TAP_POSITION_JITTER_FRACTION,
+                        cell_height * TAP_POSITION_JITTER_FRACTION,
+                    ),
+                    description=f"tile ({action.row}, {action.column})",
+                )
                 if self.tap_interval and tap_index + 1 < action.turns:
                     interval_jitter = self.tap_interval * TAP_INTERVAL_JITTER_FRACTION
                     time.sleep(
@@ -211,6 +210,10 @@ class TerraminerGoldAgent(BaseAgent):
                         )
                     )
         logger.info("Finished sending route taps; waiting for board verification.")
+
+    @staticmethod
+    def verify_route(board: TerraminerBoard, solution: MazeSolution) -> bool:
+        return TerraminerGoldAgent._is_path_connected(board, solution)
 
     @staticmethod
     def _route_has_confident_ports(

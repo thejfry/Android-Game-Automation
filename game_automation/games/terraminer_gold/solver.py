@@ -1,5 +1,6 @@
 """Route search for the rotatable path tiles in Terraminer Gold."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import heapq
 import itertools
@@ -54,7 +55,7 @@ class MazeSolver:
 
     def solve(
         self,
-        tiles: list[list[int]],
+        tiles: Sequence[Sequence[int]],
         start: tuple[int, int],
         goal: tuple[int, int],
     ) -> MazeSolution | None:

@@ -5,12 +5,12 @@ import logging
 import time
 
 from game_automation.core.device import MyPhone
-from game_automation.core.events import StateBus
 from game_automation.core.frame_stream import FrameStream
 
 from .agent import TerraminerGoldAgent
 from .controller import ControllerState, TerraminerGoldController
 from .perception import TerraminerGoldPerception
+from .tap_executor import TapExecutor
 
 
 def _coordinate(values):
@@ -33,7 +33,7 @@ def main():
     parser.add_argument(
         "--continuous",
         action="store_true",
-        help="Wait for manual confirmation and solve successive levels.",
+        help="Auto-advance Play Again screens and wait for manual ad transitions.",
     )
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = parser.parse_args()
@@ -44,23 +44,22 @@ def main():
 
     phone = MyPhone()
     phone.connect_device()
-    bus = StateBus()
     stream = FrameStream(max_queue=1, device=phone.device)
     perception = TerraminerGoldPerception(
-        bus,
         grid_size=args.grid_size,
         start=_coordinate(args.start),
         goal=_coordinate(args.goal),
     )
+    tap_executor = TapExecutor(phone)
     agent = TerraminerGoldAgent(
-        phone,
-        bus,
+        tap_executor,
         tap_interval=args.tap_interval,
         dry_run=args.dry_run,
     )
     controller = TerraminerGoldController(
         agent,
         perception,
+        tap_executor,
         continuous=args.continuous,
     )
 

@@ -2,9 +2,10 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 from .agent import TerraminerGoldAgent
-from game_automation.core.events import PerceptionState
 from .perception import TerraminerBoard
+from .perception import BoardObservation
 from .solver import EAST, NORTH, SOUTH, WEST, MazeSolution, TileAction
+from .tap_executor import TapExecutor
 
 
 class RouteVerificationTests(unittest.TestCase):
@@ -61,10 +62,10 @@ class RouteVerificationTests(unittest.TestCase):
         )
 
         self.assertTrue(
-            TerraminerGoldAgent._is_path_connected(expected_board, rotated_solution)
+            TerraminerGoldAgent.verify_route(expected_board, rotated_solution)
         )
         self.assertFalse(
-            TerraminerGoldAgent._is_path_connected(incorrect_orientation, rotated_solution)
+            TerraminerGoldAgent.verify_route(incorrect_orientation, rotated_solution)
         )
 
     def test_post_action_verification_accepts_ports_at_detection_threshold(self):
@@ -82,13 +83,12 @@ class RouteVerificationTests(unittest.TestCase):
             ],
         )
 
-        self.assertTrue(TerraminerGoldAgent._is_path_connected(board, rotated_solution))
+        self.assertTrue(TerraminerGoldAgent.verify_route(board, rotated_solution))
 
     def test_dry_run_reports_route_without_sending_taps(self):
         phone = Mock()
         phone.resolution = None
-        bus = Mock()
-        agent = TerraminerGoldAgent(phone, bus, dry_run=True)
+        agent = TerraminerGoldAgent(TapExecutor(phone), dry_run=True)
         board = TerraminerBoard(
             tile_masks=[[0, NORTH | SOUTH, 0]],
             start=(0, 0),
@@ -102,21 +102,22 @@ class RouteVerificationTests(unittest.TestCase):
                 ]
             ],
         )
-        state = PerceptionState(
+        observation = BoardObservation(
             timestamp=0,
-            data={"board": board, "frame_size": (300, 100)},
+            board=board,
+            frame_size=(300, 100),
         )
 
-        agent.tick(state)
+        result = agent.solve(observation)
 
         self.assertTrue(agent.finished)
-        self.assertEqual(agent._last_solution.tap_count, 1)
+        self.assertEqual(result.solution.tap_count, 1)
         phone.tap.assert_not_called()
 
     def test_execute_solution_jitters_tap_position_and_interval_within_bounds(self):
         phone = Mock()
         phone.resolution = (300, 300)
-        agent = TerraminerGoldAgent(phone, Mock(), tap_interval=0.04)
+        agent = TerraminerGoldAgent(TapExecutor(phone), tap_interval=0.04)
         board = TerraminerBoard(
             tile_masks=[[0, 0, 0], [0, NORTH | SOUTH, 0], [0, 0, 0]],
             start=(1, 0),
@@ -131,7 +132,7 @@ class RouteVerificationTests(unittest.TestCase):
 
         with (
             patch(
-                "game_automation.games.terraminer_gold.agent.random.uniform",
+                "game_automation.games.terraminer_gold.tap_executor.random.uniform",
                 side_effect=jitter_values,
             ),
             patch("game_automation.games.terraminer_gold.agent.time.sleep") as sleep,

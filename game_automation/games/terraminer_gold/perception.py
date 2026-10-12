@@ -6,9 +6,6 @@ import time
 import cv2
 import numpy as np
 
-from game_automation.core.events import PerceptionState
-from game_automation.core.perception import BasePerception
-
 PORT_BITS = (1, 2, 4, 8)
 PORT_CONFIDENCE_THRESHOLD = 0.75
 
@@ -19,11 +16,26 @@ class BoardNotDetectedError(ValueError):
 
 @dataclass(frozen=True)
 class TerraminerBoard:
-    tile_masks: list[list[int]]
+    tile_masks: tuple[tuple[int, ...], ...]
     start: tuple[int, int]
     goal: tuple[int, int]
     bounds: tuple[int, int, int, int]
-    tile_port_confidence: list[list[tuple[float, float, float, float]]] | None = None
+    tile_port_confidence: tuple[
+        tuple[tuple[float, float, float, float], ...], ...
+    ] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "tile_masks",
+            tuple(tuple(row) for row in self.tile_masks),
+        )
+        if self.tile_port_confidence is not None:
+            object.__setattr__(
+                self,
+                "tile_port_confidence",
+                tuple(tuple(row) for row in self.tile_port_confidence),
+            )
 
     @property
     def size(self) -> int:
@@ -36,48 +48,59 @@ class TerraminerBoard:
         return round(left + (column + 0.5) * step_x), round(top + (row + 0.5) * step_y)
 
 
-class TerraminerGoldPerception(BasePerception):
+@dataclass(frozen=True)
+class BoardObservation:
+    timestamp: float
+    board: TerraminerBoard
+    frame_size: tuple[int, int]
+
+
+class TerraminerGoldPerception:
     """Detect board bounds, grid dimensions, endpoint markers, and tile ports."""
 
     def __init__(
         self,
-        bus,
         grid_size: int | None = None,
         start: tuple[int, int] | None = None,
         goal: tuple[int, int] | None = None,
     ):
-        super().__init__(bus)
         if grid_size is not None and grid_size < 2:
             raise ValueError("Grid size must be at least 2.")
         self.grid_size = grid_size
         self.start = start
         self.goal = goal
 
-    def process(self, frame: np.ndarray) -> PerceptionState:
+    def process(self, frame: np.ndarray) -> BoardObservation:
         if frame is None or frame.ndim != 3:
             raise ValueError("Terraminer perception requires a BGR image frame.")
-        bounds = self._detect_board_bounds(frame)
+        bounds = BoardDetector._detect_board_bounds(frame)
         x1, y1, x2, y2 = bounds
-        size = self.grid_size or self._estimate_grid_size(frame[y1:y2, x1:x2])
-        tile_masks, tile_port_confidence = self._detect_tile_masks(frame, bounds, size)
-        start = self.start or self._detect_start(frame, bounds, size)
-        goal = self.goal or self._detect_goal(frame, bounds, size)
+        size = self.grid_size or BoardDetector._estimate_grid_size(frame[y1:y2, x1:x2])
+        tile_masks, tile_port_confidence = TilePortDetector._detect_tile_masks(
+            frame,
+            bounds,
+            size,
+        )
+        start = self.start or EndpointDetector._detect_start(frame, bounds, size)
+        goal = self.goal or EndpointDetector._detect_goal(frame, bounds, size)
         if start == goal:
             raise ValueError("Detected start and goal on the same tile; configure their coordinates explicitly.")
 
-        board = TerraminerBoard(tile_masks, start, goal, bounds, tile_port_confidence)
-        state = PerceptionState(
-            timestamp=time.time(),
-            data={
-                "board": board,
-                "grid_size": size,
-                "start": start,
-                "goal": goal,
-                "frame_size": (frame.shape[1], frame.shape[0]),
-            },
+        board = TerraminerBoard(
+            tuple(tuple(row) for row in tile_masks),
+            start,
+            goal,
+            bounds,
+            tuple(tuple(row) for row in tile_port_confidence),
         )
-        self.bus.publish(state)
-        return state
+        return BoardObservation(
+            timestamp=time.time(),
+            board=board,
+            frame_size=(frame.shape[1], frame.shape[0]),
+        )
+
+class BoardDetector:
+    """Locate the square board and infer its grid dimensions."""
 
     @staticmethod
     def _detect_board_bounds(frame: np.ndarray) -> tuple[int, int, int, int]:
@@ -118,6 +141,10 @@ class TerraminerGoldPerception(BasePerception):
                 + sum(horizontal_strength[y] for y in ys) / len(ys)
             ) / 2
         return max(scores, key=scores.get)
+
+
+class TilePortDetector:
+    """Classify tile ports from color and edge evidence."""
 
     @staticmethod
     def _detect_tile_masks(
@@ -214,7 +241,7 @@ class TerraminerGoldPerception(BasePerception):
                 mask = 0
                 confidences = []
                 for side, bit in enumerate(PORT_BITS):
-                    confidence = TerraminerGoldPerception._connected_port_confidence(
+                    confidence = TilePortDetector._connected_port_confidence(
                         component,
                         side,
                         edge_features,
@@ -227,6 +254,7 @@ class TerraminerGoldPerception(BasePerception):
             masks.append(tile_row)
             confidence_grid.append(confidence_row)
         return masks, confidence_grid
+
 
     @staticmethod
     def _connected_port_confidence(
@@ -319,6 +347,9 @@ class TerraminerGoldPerception(BasePerception):
             sum(bin_scores[start:start + 4]) / 4
             for start in (0, 1)
         )
+
+class EndpointDetector:
+    """Identify the miner and goal cells inside detected board bounds."""
 
     @staticmethod
     def _cell_regions(

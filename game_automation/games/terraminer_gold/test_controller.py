@@ -3,10 +3,11 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from game_automation.core.events import PerceptionState
-
 from .controller import ControllerState, TerraminerGoldController
-from .perception import TerraminerBoard
+from .agent import SolveResult
+from .perception import BoardObservation, TerraminerBoard
+from .reward_detection import RewardMatchKind, RewardScreenDetector
+from .solver import MazeSolution
 
 
 class LifecycleControllerTests(unittest.TestCase):
@@ -14,28 +15,28 @@ class LifecycleControllerTests(unittest.TestCase):
         self.agent = Mock()
         self.agent.dry_run = False
         self.agent.finished = False
-        self.agent._last_solution = object()
-        self.agent._is_path_connected.return_value = False
-        self.agent.tick.side_effect = (
-            lambda state, before_execution=None: before_execution()
-            if before_execution is not None
-            else None
-        )
+        self.agent.verify_route.return_value = False
+        solution = MazeSolution((), ((0, 0), (1, 1)))
+        self.agent.solve.side_effect = lambda observation, before_execution=None: (
+            before_execution(),
+            SolveResult(solution, True),
+        )[1]
         self.perception = Mock()
-        self.perception.process.return_value = PerceptionState(
+        self.perception.process.return_value = BoardObservation(
             timestamp=0,
-            data={
-                "board": TerraminerBoard(
-                    tile_masks=[[0, 0], [0, 0]],
-                    start=(0, 0),
-                    goal=(1, 1),
-                    bounds=(0, 0, 200, 200),
-                )
-            },
+            board=TerraminerBoard(
+                tile_masks=((0, 0), (0, 0)),
+                start=(0, 0),
+                goal=(1, 1),
+                bounds=(0, 0, 200, 200),
+            ),
+            frame_size=(200, 200),
         )
+        self.tap_executor = Mock()
         self.controller = TerraminerGoldController(
             self.agent,
             self.perception,
+            self.tap_executor,
             settling_seconds=1,
         )
         self.frame = np.zeros((200, 200, 3), dtype=np.uint8)
@@ -58,14 +59,15 @@ class LifecycleControllerTests(unittest.TestCase):
             )
             self.controller.process_frame(self.frame)
 
-        self.agent.tick.assert_called_once()
-        self.agent._is_path_connected.assert_called_once()
+        self.agent.solve.assert_called_once()
+        self.agent.verify_route.assert_called_once()
         self.assertEqual(self.perception.process.call_count, 2)
 
     def test_continuous_mode_waits_for_ack_then_stable_next_board(self):
         controller = TerraminerGoldController(
             self.agent,
             self.perception,
+            self.tap_executor,
             settling_seconds=0,
             continuous=True,
         )
@@ -77,7 +79,7 @@ class LifecycleControllerTests(unittest.TestCase):
         controller.process_frame(reward)
         self.assertEqual(controller.state, ControllerState.AWAITING_NEXT_LEVEL)
         self.assertFalse(controller.finished)
-        self.agent.phone.tap.assert_not_called()
+        self.tap_executor.tap_bounds.assert_not_called()
         self.perception.process.assert_not_called()
 
         controller.process_frame(self.frame)
@@ -92,41 +94,39 @@ class LifecycleControllerTests(unittest.TestCase):
         controller.process_frame(self.frame)
 
         self.assertEqual(controller.state, ControllerState.SETTLING)
-        self.agent.tick.assert_called_once()
+        self.agent.solve.assert_called_once()
 
     def test_continuous_mode_taps_confirmed_play_again_then_restarts(self):
         controller = TerraminerGoldController(
             self.agent,
             self.perception,
+            self.tap_executor,
             continuous=True,
+            reward_button_wait_seconds=1,
         )
-        self.agent.phone.resolution = (324, 720)
         frame = np.zeros((720, 324, 3), dtype=np.uint8)
         frame[662:710, 96:232] = (0, 215, 255)
-        bounds = controller._detect_reward_screen(frame)[1]
-
+        match = RewardScreenDetector.detect(frame)
         with patch(
-            "game_automation.games.terraminer_gold.controller.random.randint",
-            side_effect=lambda lower, upper: upper,
-        ) as random_integer, patch(
-            "game_automation.games.terraminer_gold.controller.time.sleep"
-        ) as sleep:
+            "game_automation.games.terraminer_gold.controller.time.monotonic",
+            side_effect=(100, 100, 101),
+        ):
             controller.process_frame(frame)
             controller.process_frame(frame)
+            self.assertEqual(controller.state, ControllerState.ADVANCING_LEVEL)
             controller.process_frame(frame)
+            self.assertEqual(controller.state, ControllerState.ADVANCING_LEVEL)
             controller.process_frame(frame)
 
-        tap_x, tap_y = self.agent.phone.tap.call_args.args
-        x, y, width, height = bounds
-        self.assertGreaterEqual(tap_x, x)
-        self.assertLessEqual(tap_x, x + width - 1)
-        self.assertGreaterEqual(tap_y, y)
-        self.assertLessEqual(tap_y, y + height - 1)
-        self.agent.phone.tap.assert_called_once_with(tap_x, tap_y)
-        self.assertEqual(random_integer.call_count, 2)
-        sleep.assert_called_once()
+        self.assertEqual(match.kind, RewardMatchKind.PLAY_AGAIN)
+        self.tap_executor.tap_bounds.assert_called_once_with(
+            match.button_bounds,
+            (324, 720),
+            description="confirmed Play Again button",
+        )
         self.assertEqual(controller.state, ControllerState.WAITING_FOR_BOARD)
         self.agent.reset_for_next_level.assert_called_once()
+        self.perception.process.assert_not_called()
 
     def test_reward_screen_stops_controller_before_board_perception(self):
         frame = np.zeros((720, 324, 3), dtype=np.uint8)
@@ -143,37 +143,39 @@ class LifecycleControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.state, ControllerState.REWARD_SCREEN)
         self.assertTrue(self.controller.finished)
         self.perception.process.assert_not_called()
-        self.agent.tick.assert_not_called()
-        self.agent.phone.tap.assert_not_called()
+        self.agent.solve.assert_not_called()
+        self.tap_executor.tap_bounds.assert_not_called()
 
     def test_gameplay_frame_is_not_misclassified_as_reward_screen(self):
-        self.assertFalse(TerraminerGoldController._is_reward_screen(self.frame))
+        self.assertIsNone(RewardScreenDetector.detect(self.frame))
 
     def test_reward_button_with_text_cutouts_is_detected_near_bottom(self):
         frame = np.zeros((720, 324, 3), dtype=np.uint8)
         frame[662:710, 96:232] = (0, 215, 255)
         frame[683:686, 121:208] = (0, 0, 0)
 
-        self.assertTrue(TerraminerGoldController._is_reward_screen(frame))
+        match = RewardScreenDetector.detect(frame)
+        self.assertEqual(match.kind, RewardMatchKind.PLAY_AGAIN)
 
     def test_wide_yellow_game_board_tile_above_reward_area_is_not_detected(self):
         frame = np.zeros((720, 324, 3), dtype=np.uint8)
         frame[500:535, 80:250] = (0, 215, 255)
 
-        self.assertFalse(TerraminerGoldController._is_reward_screen(frame))
+        self.assertIsNone(RewardScreenDetector.detect(frame))
 
     def test_level_up_and_watch_ad_reward_panel_is_detected(self):
         frame = np.zeros((900, 448, 3), dtype=np.uint8)
         frame[536:608, 93:355] = (0, 215, 255)
         frame[570:596, 110:338] = (0, 145, 255)
 
-        self.assertTrue(TerraminerGoldController._is_reward_screen(frame))
+        match = RewardScreenDetector.detect(frame)
+        self.assertEqual(match.kind, RewardMatchKind.LEVEL_UP_PANEL)
 
     def test_yellow_board_region_without_nested_watch_ad_button_is_not_reward(self):
         frame = np.zeros((900, 448, 3), dtype=np.uint8)
         frame[536:608, 93:355] = (0, 215, 255)
 
-        self.assertFalse(TerraminerGoldController._is_reward_screen(frame))
+        self.assertIsNone(RewardScreenDetector.detect(frame))
 
 
 if __name__ == "__main__":
