@@ -45,6 +45,12 @@ class TerraminerGoldAgent(BaseAgent):
     def finished(self) -> bool:
         return self._finished
 
+    def reset_for_next_level(self) -> None:
+        self._attempts = 0
+        self._finished = False
+        self._last_solution = None
+        self.running = False
+
     def tick(
         self,
         state: PerceptionState,

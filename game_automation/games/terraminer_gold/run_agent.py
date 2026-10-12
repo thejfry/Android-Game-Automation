@@ -9,7 +9,7 @@ from game_automation.core.events import StateBus
 from game_automation.core.frame_stream import FrameStream
 
 from .agent import TerraminerGoldAgent
-from .controller import TerraminerGoldController
+from .controller import ControllerState, TerraminerGoldController
 from .perception import TerraminerGoldPerception
 
 
@@ -29,6 +29,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="Detect the board and report a route without sending device taps.",
+    )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Wait for manual confirmation and solve successive levels.",
     )
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = parser.parse_args()
@@ -53,11 +58,22 @@ def main():
         tap_interval=args.tap_interval,
         dry_run=args.dry_run,
     )
-    controller = TerraminerGoldController(agent, perception)
+    controller = TerraminerGoldController(
+        agent,
+        perception,
+        continuous=args.continuous,
+    )
 
     try:
         stream.start()
         while not controller.finished:
+            if controller.state is ControllerState.AWAITING_NEXT_LEVEL:
+                input(
+                    "After any ad, open the next puzzle and press Enter to detect it "
+                    "(Ctrl+C to stop): "
+                )
+                controller.acknowledge_next_level()
+                continue
             frame = stream.get_latest_frame()
             if frame is None:
                 time.sleep(0.01)

@@ -17,6 +17,12 @@ To detect and solve a board without sending any taps, use dry-run mode:
 python -m game_automation.games.terraminer_gold.run_agent --dry-run --log-level DEBUG
 ```
 
+To keep the controller running across manually opened levels:
+
+```powershell
+python -m game_automation.games.terraminer_gold.run_agent --continuous
+```
+
 If automatic board detection needs help, set the square grid size or endpoint
 coordinates (row and column, zero-based):
 
@@ -41,15 +47,32 @@ currently detect a game-level victory indicator.
 
 The runner logs controller state transitions: `WaitingForBoard`, `Planning`,
 `Executing`, `Settling`, `Verifying`, `WaitingForCompletion`, `RewardScreen`,
-and `Failed` (dry-run ends in `Stopped`). After sending a route, it will not
-re-plan or send more taps while the game animates. It checks for the reward
-screen before trying board perception; the detector searches the lower 40%
-of the frame for a large, broad yellow action-button shape near the bottom.
-Morphological closing bridges small text/outline gaps, and the signal must be
-present in two consecutive frames. On confirmation it enters `RewardScreen`
-and exits without pressing `Play Again` or `Exit`. If route geometry cannot be
-confirmed during the transition, it logs that result and waits for the game's
-completion screen instead of retrying against transient frames.
+`AwaitingNextLevel`, and `Failed` (dry-run ends in `Stopped`). After sending a
+route, it will not re-plan or send more taps while the game animates. It checks
+for the reward screen before trying board perception; the detector recognizes
+either the bottom action button or the wider `LEVEL UP` / `Watch Ad` panel
+that appears between some levels. The latter requires a yellow panel with a
+nested orange button, rather than a broad yellow region alone. DEBUG logs
+include the matched button/panel bounding boxes. Morphological closing bridges
+small text/outline gaps, and the signal must be present in two consecutive frames.
+On confirmation, normal mode enters `RewardScreen` and exits without pressing
+`Play Again` or `Exit`. In continuous mode, a confirmed bottom `Play Again`
+button is tapped at a randomized point inside its detected bounds; the
+controller waits briefly, then resets and resumes board detection. It ignores
+the still-visible button after tapping so it cannot repeatedly activate it.
+A `LEVEL UP` / `Watch Ad` panel is never tapped and instead transitions to
+`AwaitingNextLevel`.
+If route geometry cannot be confirmed during the transition, it logs that
+result and waits for the game's completion screen instead of retrying against
+transient frames.
+
+To keep the process running across levels, add `--continuous`. Levels with a
+bottom `Play Again` button advance automatically. If an inter-level ad panel
+appears, finish the ad, open the next puzzle if needed, and press Enter in the
+terminal. The controller then requires three consecutive matching board
+detections before planning, preventing it from treating the previous reward
+screen or an animation frame as a new level. It does not click the ad panel or
+automate ad playback.
 
 The agent captures device screenshots over ADB and uses ADB for control, so an
 authorized connected device is required. It waits for a recognizable board to
