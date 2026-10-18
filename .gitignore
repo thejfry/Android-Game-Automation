@@ -1,3 +1,6 @@
+# Troubleshooting files
+8d*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
