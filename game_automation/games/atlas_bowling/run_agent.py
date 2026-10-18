@@ -45,7 +45,7 @@ def main():
         nargs=4,
         type=float,
         metavar=("O1", "O2", "O3", "O4"),
-        default=None,
+        default=[6.250, 12.270, 18.180, 24.000],
         help="Four elapsed times (seconds after session start) for automatic clicks",
     )
 

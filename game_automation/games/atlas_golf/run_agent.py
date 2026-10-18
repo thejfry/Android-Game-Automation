@@ -39,7 +39,7 @@ def main():
         nargs=10,
         type=float,
         metavar=("O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8", "O9", "O10"),
-        default=None,
+        default=[3.700, 7.000, 10.030, 12.880, 15.560, 18.070, 20.480, 22.775, 24.960, 27.060],
         help="Ten elapsed times (seconds after session start) for automatic clicks",
     )
 
