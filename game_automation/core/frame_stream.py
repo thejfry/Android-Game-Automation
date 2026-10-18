@@ -1,116 +1,110 @@
-import subprocess
-import threading
-from queue import Queue
-from typing import Optional
 import logging
-import time
-import av
+import threading
+from queue import Empty, Queue
+from typing import Optional, Protocol
+
+import adbutils
+import cv2
 import numpy as np
-import os
+
+logger = logging.getLogger(__name__)
+
+
+class ScreenshotDevice(Protocol):
+    def shell(
+        self,
+        command: str,
+        *,
+        encoding: None,
+        timeout: float,
+    ) -> bytes: ...
 
 
 class FrameStream:
-    """
-    Streams frames from scrcpy using PyAV to decode H.264 in real time.
-    Produces BGR NumPy arrays suitable for OpenCV.
-    """
+    """Continuously capture BGR screenshots from an Android device over ADB."""
 
-    def __init__(self, max_queue: int = 1, max_size: int = 720, bitrate: int = 8000000):
-        self.queue = Queue(maxsize=max_queue)
+    def __init__(
+        self,
+        max_queue: int = 1,
+        max_size: int = 720,
+        device: ScreenshotDevice | None = None,
+    ):
+        if max_size < 1:
+            raise ValueError("Maximum frame size must be positive.")
+        self.queue: Queue[np.ndarray] = Queue(maxsize=max_queue)
         self.max_size = max_size
-        self.bitrate = bitrate
-        self.proc: Optional[subprocess.Popen] = None
-        self.scrcpy_proc: Optional[subprocess.Popen] = None
+        self.device = device
         self.running = False
+        self._stop_event = threading.Event()
+        self._reader_thread: threading.Thread | None = None
 
     def start(self):
-        """
-        Launch scrcpy and pipe H.264 through ffmpeg.
-        """
-        # First process: scrcpy outputting H.264
-        scrcpy_cmd = [
-            "scrcpy",
-            "--no-audio",
-            "--no-control",
-            "--max-size", str(self.max_size),
-            "--video-bit-rate", str(self.bitrate)
-        ]
-
-        # Second process: ffmpeg wrapping it in MPEGTS
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
-            "-i", "pipe:0",
-            "-f", "mpegts",
-            "-c:v", "copy",
-            "-",
-            "pipe:1"
-        ]
-
-        self.scrcpy_proc = subprocess.Popen(scrcpy_cmd, stdout=subprocess.PIPE)
-        self.proc = subprocess.Popen(
-            ffmpeg_cmd,
-            stdin=self.scrcpy_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        )
-
+        """Start the background ADB screenshot reader."""
+        if self.running:
+            return
+        if self.device is None:
+            self.device = adbutils.adb.device()
+        self._stop_event.clear()
         self.running = True
-        threading.Thread(target=self._reader_loop, daemon=True).start()
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+        logger.info("Started Android screen capture over ADB.")
 
     def stop(self):
         self.running = False
-        if self.proc:
-            self.proc.terminate()
-            self.proc = None
-        if self.scrcpy_proc:
-            self.scrcpy_proc.terminate()
-            self.scrcpy_proc = None
+        self._stop_event.set()
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=2)
+            self._reader_thread = None
 
     def _reader_loop(self):
-        """
-        Decode frames from ffmpeg pipe.
-        """
-        logging.info("Waiting for ffmpeg to initialize...")
-        time.sleep(0.5)
-        
-        try:
-            logging.info("Opening ffmpeg stream...")
-            container = av.open(self.proc.stdout, format='mpegts')
-            logging.info("Container opened successfully")
+        first_frame = True
+        while self.running:
+            try:
+                image_data = self.device.shell(
+                    "screencap -p",
+                    encoding=None,
+                    timeout=5,
+                )
+                frame = cv2.imdecode(
+                    np.frombuffer(image_data, dtype=np.uint8),
+                    cv2.IMREAD_COLOR,
+                )
+                if frame is None:
+                    raise RuntimeError("ADB returned an invalid PNG screenshot.")
+                height, width = frame.shape[:2]
+                largest_dimension = max(width, height)
+                if largest_dimension > self.max_size:
+                    scale = self.max_size / largest_dimension
+                    frame = cv2.resize(
+                        frame,
+                        (round(width * scale), round(height * scale)),
+                        interpolation=cv2.INTER_AREA,
+                    )
 
-            for frame in container.decode(video=0):
-                if not self.running:
-                    break
-
-                img = frame.to_ndarray(format="bgr24")
+                if first_frame:
+                    logger.info(
+                        "Android screen capture is active (%dx%d).",
+                        frame.shape[1],
+                        frame.shape[0],
+                    )
+                    first_frame = False
 
                 if self.queue.full():
                     try:
                         self.queue.get_nowait()
-                    except Exception:
+                    except Empty:
                         pass
-
-                self.queue.put(img)
-
-            container.close()
-        except Exception as e:
-            logging.error(f"Frame stream error: {type(e).__name__}: {e}")
-            logging.error(f"scrcpy process returncode: {self.scrcpy_proc.returncode}")
-            # Check stderr if available
-            if self.scrcpy_proc.stderr:
-                err = self.scrcpy_proc.stderr.read()
-                if err:
-                    logging.error(f"scrcpy stderr: {err}")
+                self.queue.put(frame)
+            except Exception:
+                if not self.running:
+                    break
+                logger.exception("Failed to capture the Android screen; retrying shortly.")
+                self._stop_event.wait(1)
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
-        """
-        Non-blocking fetch of the most recent frame.
-        """
+        """Non-blocking fetch of the most recent screenshot."""
         try:
             return self.queue.get_nowait()
-        except Exception:
+        except Empty:
             return None

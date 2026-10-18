@@ -14,7 +14,7 @@ def main():
 
     state_bus = StateBus()
 
-    stream = FrameStream(max_queue=1)
+    stream = FrameStream(max_queue=1, device=phone.device)
     stream.start()
 
     perception = ExampleGamePerception(state_bus)
