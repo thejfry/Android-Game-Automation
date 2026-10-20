@@ -9,7 +9,8 @@ from game_automation.core.frame_stream import FrameStream
 from game_automation.games.terraminer_gold.tap_executor import TapExecutor
 
 from .agent import TerraminerRockAgent
-from .perception import BoardNotDetectedError, TerraminerRockPerception
+from .controller import ControllerState, TerraminerRockController
+from .perception import TerraminerRockPerception
 
 
 def main():
@@ -47,57 +48,29 @@ def main():
         tap_interval=args.tap_interval,
         dry_run=args.dry_run,
     )
-    waiting_for_next_level = False
-    candidate_signature = None
-    candidate_frames = 0
+    controller = TerraminerRockController(
+        agent,
+        perception,
+        agent.tap_executor,
+        continuous=args.continuous,
+    )
     try:
         stream.start()
-        while True:
+        while not controller.finished:
+            if controller.state is ControllerState.AWAITING_NEXT_LEVEL:
+                input(
+                    "Finish the ad or open the next rock board, then press Enter "
+                    "(Ctrl+C to stop): "
+                )
+                controller.acknowledge_next_level()
+                continue
             frame = stream.get_latest_frame()
             if frame is None:
                 time.sleep(0.01)
                 continue
-            try:
-                observation = perception.process(frame)
-            except BoardNotDetectedError as error:
-                candidate_signature = None
-                candidate_frames = 0
-                if not waiting_for_next_level:
-                    logging.getLogger(__name__).info(
-                        "Waiting for a recognizable memory board: %s", error
-                    )
-                continue
-
-            if waiting_for_next_level:
-                if any(card.face_up for card in observation.board.cards):
-                    candidate_signature = None
-                    candidate_frames = 0
-                    continue
-                signature = observation.board.signature
-                if signature != candidate_signature:
-                    candidate_signature = signature
-                    candidate_frames = 1
-                else:
-                    candidate_frames += 1
-                if candidate_frames < 3:
-                    continue
-                waiting_for_next_level = False
-                agent.reset_for_next_level()
-
-            if not agent.process(observation):
-                if args.dry_run:
-                    break
-                continue
-            if not args.continuous:
+            controller.process_frame(frame)
+            if args.dry_run and controller.state is ControllerState.PLAYING:
                 break
-
-            input(
-                "Board complete. Open the next rock level, then press Enter "
-                "(Ctrl+C to stop): "
-            )
-            waiting_for_next_level = True
-            candidate_signature = None
-            candidate_frames = 0
     except KeyboardInterrupt:
         logging.info("Terraminer Rock automation interrupted.")
     finally:

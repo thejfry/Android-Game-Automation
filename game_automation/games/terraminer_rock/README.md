@@ -17,12 +17,13 @@ python -m game_automation.games.terraminer_rock.run_agent --dry-run --log-level 
 ```
 
 By default, it stops after all cards on the current board are matched. Use
-`--continuous` to keep running through levels: after each board is completed,
-open the next rock level and press Enter in the terminal. The next board must
-be detected face-down in three consecutive frames before the agent forgets the
-previous level's card locations and starts learning the new board. Press
-Ctrl+C to stop. `--tap-interval` controls the minimum wait between taps
-(default `0.5` seconds).
+`--continuous` to keep running through levels. On the standard results page it
+automatically taps the detected **Play Again** button. If the level-up/ad prompt
+appears, it does not tap **Play Level**; finish or dismiss the prompt, open the
+next rock board, then press Enter in the terminal. The next board must be
+detected face-down in three consecutive frames before the agent resets its
+memory. Press Ctrl+C to stop. `--tap-interval` controls the minimum wait
+between card taps (default `0.5` seconds).
 
 ## How the solver works
 
@@ -61,7 +62,7 @@ shuffle. Perception and the image-distance threshold are calibrated against the
 provided screenshots; substantial changes to the game's art, animation, or
 screen layout may require adjusting the detectors.
 
-The game-level board completion is detected from the green matched cards.
-Progression to another level is intentionally manual, including with
-`--continuous`; the agent does not tap `End Game`, ads, or level-navigation
-controls.
+The game-level board completion is detected from the green matched cards. A
+dedicated lifecycle controller then waits for a stable results control before
+stopping, replaying, or awaiting a manually opened board. The agent does not
+tap `End Game`, ad prompts, or the level-up **Play Level** button.
