@@ -58,6 +58,9 @@ class MemorySolver:
             if first.image is None:
                 raise ValueError("A face-up card is missing its image signature.")
             self._images[first.position] = first.image.copy()
+            remaining = self._unmatched_cards(board)
+            if len(remaining) == 2:
+                return next(card.position for card in remaining if card.position != first.position)
             partner = self._known_partner(first.position, first.image)
             if partner is not None:
                 return partner
@@ -68,6 +71,10 @@ class MemorySolver:
                     "remains. Check the image-match threshold and card perception."
                 )
             return unknown
+
+        remaining = self._unmatched_cards(board)
+        if len(remaining) == 2:
+            return remaining[0].position
 
         known_pair = self._first_known_pair()
         if known_pair is not None:
@@ -82,6 +89,10 @@ class MemorySolver:
         raise RuntimeError(
             "No unflipped card or known pair remains, but the board is incomplete."
         )
+
+    @staticmethod
+    def _unmatched_cards(board: RockBoard) -> list[CardObservation]:
+        return [card for card in board.cards if not card.matched]
 
     def _first_known_pair(self) -> CardPosition | None:
         for position in sorted(self._images):

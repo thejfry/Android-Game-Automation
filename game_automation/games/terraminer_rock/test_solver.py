@@ -24,11 +24,18 @@ def make_board(states, images, rows=2, columns=2):
     return RockBoard(tuple(cards), rows, columns, (columns * 100, rows * 100))
 
 
+def make_icon(color, x_start):
+    image = np.zeros((32, 32, 4), dtype=np.float32)
+    image[6:26, x_start:x_start + 8, :3] = color
+    image[6:26, x_start:x_start + 8, 3] = 255
+    return image
+
+
 class MemorySolverTests(unittest.TestCase):
     def setUp(self):
         self.solver = MemorySolver()
-        self.icon_a = np.full((32, 32, 3), 30, dtype=np.float32)
-        self.icon_b = np.full((32, 32, 3), 220, dtype=np.float32)
+        self.icon_a = make_icon(30, 5)
+        self.icon_b = make_icon(220, 19)
 
     def test_starts_by_revealing_first_unknown_card(self):
         board = make_board({}, {})
@@ -93,6 +100,46 @@ class MemorySolverTests(unittest.TestCase):
         board = RockBoard(cards, 4, 6, (300, 200))
 
         self.assertEqual(self.solver.next_card(board), (0, 0))
+
+    def test_forces_pair_when_only_two_unmatched_cards_remain(self):
+        self.solver.next_card(
+            make_board(
+                {2: "open", 3: "open"},
+                {2: self.icon_a, 3: self.icon_b},
+            )
+        )
+        self.solver.next_card(
+            make_board(
+                {0: "matched", 1: "matched"},
+                {0: self.icon_a, 1: self.icon_a},
+            )
+        )
+
+        self.assertEqual(
+            self.solver.next_card(
+                make_board(
+                    {0: "matched", 1: "matched"},
+                    {0: self.icon_a, 1: self.icon_a},
+                )
+            ),
+            (1, 0),
+        )
+
+    def test_forces_remaining_partner_when_one_of_last_two_is_open(self):
+        board = make_board(
+            {
+                0: "matched",
+                1: "matched",
+                2: "open",
+            },
+            {
+                0: self.icon_a,
+                1: self.icon_a,
+                2: self.icon_a,
+            },
+        )
+
+        self.assertEqual(self.solver.next_card(board), (1, 1))
 
 
 if __name__ == "__main__":

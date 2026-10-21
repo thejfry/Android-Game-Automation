@@ -50,6 +50,10 @@ between card taps (default `0.5` seconds).
    game to turn them face-down before choosing again. When they do, that
    position-pair is recorded as a known mismatch and will never be tested
    again, even if their images were initially classified as similar.
+   When only two unmatched cards remain, the game rule that all cards form
+   pairs takes precedence over the visual similarity score: the solver always
+   selects the other remaining card, even if its image signature looks
+   different.
 5. **Stop on completion.** The game keeps successful pairs face-up with a green
    border, so those cards are permanently removed from the solver's choices.
    When all detected cards have that state, the level is complete.
