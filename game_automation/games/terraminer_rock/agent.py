@@ -25,11 +25,18 @@ class TerraminerRockAgent:
         self.solver = MemorySolver()
         self._next_tap_at = 0.0
         self._tapped_cards: set[tuple[int, int]] = set()
+        self._tap_count = 0
+
+    @property
+    def tap_count(self) -> int:
+        """Number of card taps sent on the current level."""
+        return self._tap_count
 
     def reset_for_next_level(self) -> None:
         self.solver.reset()
         self._next_tap_at = 0.0
         self._tapped_cards.clear()
+        self._tap_count = 0
 
     def process(self, observation: BoardObservation) -> bool:
         """Tap at most one card; return whether the board is fully matched."""
@@ -57,12 +64,13 @@ class TerraminerRockAgent:
             description=f"memory card ({position[0]}, {position[1]})",
         )
         self._tapped_cards.add(position)
+        self._tap_count += 1
         self._next_tap_at = time.monotonic() + self.tap_interval
-        logger.info(
-            "Tapped card (%d, %d); revealed %d distinct cards and confirmed %d matches.",
+        logger.debug(
+            "Tapped card (%d, %d); %d card taps sent and %d matches confirmed.",
             position[0],
             position[1],
-            len(self._tapped_cards),
+            self._tap_count,
             sum(1 for item in board.cards if item.matched),
         )
         return False

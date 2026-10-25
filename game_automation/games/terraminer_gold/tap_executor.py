@@ -9,8 +9,13 @@ logger = logging.getLogger(__name__)
 
 
 class TapExecutor:
-    def __init__(self, phone: MyPhone):
+    def __init__(
+        self,
+        phone: MyPhone,
+        tap_log_level: int = logging.INFO,
+    ):
         self.phone = phone
+        self.tap_log_level = tap_log_level
 
     def tap_point(
         self,
@@ -88,6 +93,12 @@ class TapExecutor:
     ) -> tuple[int, int]:
         tap_x = min(device_width - 1, max(0, round(frame_x * device_width / frame_width)))
         tap_y = min(device_height - 1, max(0, round(frame_y * device_height / frame_height)))
-        logger.info("Tapping %s at device position (%d, %d).", description, tap_x, tap_y)
+        logger.log(
+            self.tap_log_level,
+            "Tapping %s at device position (%d, %d).",
+            description,
+            tap_x,
+            tap_y,
+        )
         self.phone.tap(tap_x, tap_y)
         return tap_x, tap_y

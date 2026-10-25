@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from .controller import ControllerState, TerraminerRockController
+from .hud_detection import RockHudStats
 from .perception import BoardObservation, CardObservation, RockBoard
+from .reward_detection import RewardMatch, RewardMatchKind
 
 
 def blank_board():
@@ -37,6 +39,7 @@ class RockControllerTests(unittest.TestCase):
     def setUp(self):
         self.agent = Mock()
         self.agent.process.return_value = False
+        self.agent.tap_count = 0
         self.perception = Mock()
         self.perception.process.return_value = BoardObservation(
             timestamp=0,
@@ -111,9 +114,303 @@ class RockControllerTests(unittest.TestCase):
         self.assertEqual(controller.state, ControllerState.AWAITING_NEXT_LEVEL)
         self.assertFalse(controller.finished)
         self.tap_executor.tap_bounds.assert_not_called()
+        self.assertIsNotNone(controller._next_level_wait_started_at)
         controller.acknowledge_next_level()
         self.assertEqual(controller.state, ControllerState.WAITING_FOR_BOARD)
         self.agent.reset_for_next_level.assert_called_once()
+
+    def test_continuous_mode_detects_stable_next_board_without_user_input(self):
+        controller = TerraminerRockController(
+            self.agent,
+            self.perception,
+            self.tap_executor,
+            continuous=True,
+            next_level_poll_interval_seconds=5,
+            next_level_timeout_seconds=10,
+        )
+        controller.state = ControllerState.AWAITING_NEXT_LEVEL
+        controller._next_level_wait_started_at = 10
+        clock = [10.0]
+
+        with patch(
+            "game_automation.games.terraminer_rock.controller.time.monotonic",
+            side_effect=lambda: clock[0],
+        ), patch(
+            "game_automation.games.terraminer_rock.controller.RewardScreenDetector.detect",
+            return_value=None,
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="INFO",
+        ) as captured:
+            controller.process_frame(board_frame())
+            clock[0] = 10.5
+            controller.process_frame(board_frame())
+            self.assertEqual(self.perception.process.call_count, 1)
+            clock[0] = 11.0
+            controller.process_frame(board_frame())
+            clock[0] = 12.0
+            controller.process_frame(board_frame())
+
+        self.assertEqual(controller.state, ControllerState.PLAYING)
+        self.assertEqual(controller._level_number, 1)
+        self.assertEqual(self.perception.process.call_count, 3)
+        self.assertEqual(controller.next_level_confirmation_poll_interval_seconds, 1.0)
+        self.agent.reset_for_next_level.assert_called_once()
+        self.agent.process.assert_called_once()
+        self.assertIn("resuming automatically", "\n".join(captured.output))
+
+    def test_stops_after_next_level_wait_timeout(self):
+        controller = TerraminerRockController(
+            self.agent,
+            self.perception,
+            self.tap_executor,
+            continuous=True,
+            next_level_timeout_seconds=5,
+        )
+        controller.state = ControllerState.AWAITING_NEXT_LEVEL
+        controller._next_level_wait_started_at = 10
+        with patch(
+            "game_automation.games.terraminer_rock.controller.time.monotonic",
+            return_value=15,
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="WARNING",
+        ) as captured:
+            controller.process_frame(board_frame())
+
+        self.assertEqual(controller.state, ControllerState.STOPPED)
+        self.assertTrue(controller.finished)
+        self.assertIn("No new rock board appeared", "\n".join(captured.output))
+        self.perception.process.assert_not_called()
+
+    def test_logs_progress_only_when_completed_match_count_changes(self):
+        self.agent.process.return_value = False
+        frame = board_frame()
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            return_value=RockHudStats(0, 30, 90, 0, 2),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="INFO",
+        ) as captured:
+            self.controller.process_frame(frame)
+            self.controller.process_frame(frame)
+            self.controller.process_frame(frame)
+            self.controller.process_frame(frame)
+
+        progress_lines = [
+            line for line in captured.output if "progress:" in line
+        ]
+        self.assertEqual(len(progress_lines), 1)
+        self.assertIn("0/2 matches", progress_lines[0])
+        self.assertIn("Moves 0/30", progress_lines[0])
+        self.assertIn("Time 90s", progress_lines[0])
+        self.assertFalse(any("HUD:" in line for line in captured.output))
+
+    def test_progress_does_not_decrease_when_matched_border_is_missed_in_a_frame(self):
+        def observation_with_matches(match_count):
+            cards = tuple(
+                CardObservation(
+                    row,
+                    column,
+                    (column * 50, row * 50, 40, 40),
+                    index < match_count * 2,
+                    index < match_count * 2,
+                    None,
+                )
+                for index, (row, column) in enumerate(
+                    (divmod(index, 2) for index in range(4))
+                )
+            )
+            return BoardObservation(
+                0,
+                RockBoard(cards, 2, 2, (100, 100)),
+            )
+
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            side_effect=(
+                RockHudStats(0, 30, 90, count, 2)
+                for count in (0, 1, 0, 2, 1)
+            ),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="INFO",
+        ) as captured:
+            for count in (0, 1, 0, 2, 1):
+                self.controller._log_match_progress(
+                    observation_with_matches(count),
+                    board_frame(),
+                )
+
+        progress_counts = [
+            int(line.split(" matches", 1)[0].rsplit(" ", 1)[-1].split("/")[0])
+            for line in captured.output
+            if "progress:" in line
+        ]
+        self.assertEqual(progress_counts, [0, 1, 2])
+
+    def test_ignores_hud_matches_not_confirmed_by_the_board(self):
+        cards = tuple(
+            CardObservation(
+                row,
+                column,
+                (column * 50, row * 50, 40, 40),
+                index < 2,
+                index < 2,
+                None,
+            )
+            for index, (row, column) in enumerate(
+                (divmod(index, 2) for index in range(4))
+            )
+        )
+        observation = BoardObservation(0, RockBoard(cards, 2, 2, (100, 100)))
+
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            return_value=RockHudStats(0, 30, 90, 2, 2),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="DEBUG",
+        ) as captured:
+            self.controller._log_match_progress(observation, board_frame())
+
+        self.assertIsNone(self.controller._last_hud_stats)
+        self.assertIn("only 1 matched pairs", "\n".join(captured.output))
+
+    def test_uses_detected_board_pair_count_when_hud_denominator_is_misread(self):
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            return_value=RockHudStats(0, 30, 90, 0, 70),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="INFO",
+        ) as captured:
+            self.controller._log_match_progress(
+                BoardObservation(0, blank_board()),
+                board_frame(),
+            )
+
+        self.assertEqual(
+            self.controller._last_hud_stats,
+            RockHudStats(0, 30, 90, 0, 2),
+        )
+        output = "\n".join(captured.output)
+        self.assertIn("progress:", output)
+        self.assertIn("0/2 matches", output)
+        self.assertIn("Moves 0/30", output)
+        self.assertIn("Time 90s", output)
+
+    def test_ignores_hud_values_that_violate_tap_or_time_progress(self):
+        self.agent.tap_count = 1
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            return_value=RockHudStats(2, 30, 90, 0, 2),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="DEBUG",
+        ) as captured:
+            self.controller._log_match_progress(
+                BoardObservation(0, blank_board()),
+                board_frame(),
+            )
+
+        self.assertIsNone(self.controller._last_hud_stats)
+        self.assertIn("only 1 card taps have been sent", "\n".join(captured.output))
+
+        self.agent.tap_count = 10
+        readings = iter(
+            (
+                RockHudStats(2, 30, 80, 0, 2),
+                RockHudStats(1, 30, 82, 0, 2),
+            )
+        )
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            side_effect=lambda _frame: next(readings),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="DEBUG",
+        ) as captured:
+            observation = BoardObservation(0, blank_board())
+            self.controller._log_match_progress(observation, board_frame())
+            accepted = self.controller._last_hud_stats
+            self.controller._log_match_progress(observation, board_frame())
+
+        self.assertEqual(accepted, RockHudStats(2, 30, 80, 0, 2))
+        self.assertEqual(self.controller._last_hud_stats, accepted)
+        self.assertIn("Ignoring inconsistent HUD counters", "\n".join(captured.output))
+
+    def test_completed_level_stats_include_estimated_time_and_normalized_averages(self):
+        matched_cards = tuple(
+            CardObservation(
+                row,
+                column,
+                (column * 50, row * 50, 40, 40),
+                True,
+                True,
+                np.zeros((32, 32, 4), dtype=np.float32),
+            )
+            for row in range(2)
+            for column in range(2)
+        )
+        complete_board = RockBoard(matched_cards, 2, 2, (100, 100))
+        self.perception.process.side_effect = [
+            BoardObservation(0, blank_board()),
+            BoardObservation(0, blank_board()),
+            BoardObservation(0, blank_board()),
+            BoardObservation(0, blank_board()),
+            BoardObservation(0, complete_board),
+        ]
+        self.agent.process.side_effect = (False, False, True)
+        self.agent.tap_count = 8
+        ticks = iter((100.0, 112.0, 112.0))
+
+        with patch(
+            "game_automation.games.terraminer_rock.controller.time.monotonic",
+            side_effect=lambda: next(ticks),
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="INFO",
+        ) as captured:
+            self.controller.process_frame(board_frame())
+            self.controller.process_frame(board_frame())
+            self.controller.process_frame(board_frame())
+            self.controller.process_frame(board_frame())
+            self.controller.process_frame(board_frame())
+
+        summary = "\n".join(captured.output)
+        self.assertIn("estimated time left 78s of 90s", summary)
+        self.assertIn("12.0s elapsed (6.00s/match)", summary)
+        self.assertIn("4 moves (2.00/match)", summary)
+        self.assertIn("avg 12.0s/level", summary)
+        self.assertIn("Level | Pairs | Time left | Moves", summary)
+        self.assertIn("     1 |     2 |     78s", summary)
+
+    def test_reward_screen_records_completion_when_board_disappears(self):
+        self.controller._level_started_at = 10.0
+        self.controller._level_expected_pairs = 8
+        self.controller._level_number = 1
+        self.controller._last_hud_stats = RockHudStats(9, 40, 60, 7, 8)
+        self.controller._last_hud_stats_at = 10.0
+        self.agent.tap_count = 26
+
+        with patch(
+            "game_automation.games.terraminer_rock.controller.time.monotonic",
+            return_value=50.0,
+        ), self.assertLogs(
+            "terraminer_rock.controller",
+            level="INFO",
+        ) as captured:
+            self.controller._handle_confirmed_reward(
+                RewardMatch(RewardMatchKind.PLAY_AGAIN, (1, 1, 10, 10)),
+                (918, 448),
+            )
+
+        summary = "\n".join(captured.output)
+        self.assertIn("Level 1 complete: estimated time left 50s", summary)
+        self.assertIn("13 moves (1.62/match)", summary)
+        self.assertTrue(self.controller._level_recorded)
 
 
 if __name__ == "__main__":

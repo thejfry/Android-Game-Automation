@@ -19,11 +19,41 @@ python -m game_automation.games.terraminer_rock.run_agent --dry-run --log-level 
 By default, it stops after all cards on the current board are matched. Use
 `--continuous` to keep running through levels. On the standard results page it
 automatically taps the detected **Play Again** button. If the level-up/ad prompt
-appears, it does not tap **Play Level**; finish or dismiss the prompt, open the
-next rock board, then press Enter in the terminal. The next board must be
-detected face-down in three consecutive frames before the agent resets its
-memory. Press Ctrl+C to stop. `--tap-interval` controls the minimum wait
-between card taps (default `0.5` seconds).
+appears, it does not tap **Play Level**. Instead, it checks the screen every
+five seconds for a new face-down board. Once a possible board is detected, it
+checks again at a faster cadence (20% of the poll interval, capped at one
+second) and resumes after three matching board checks. If a check fails, it
+returns to the slower polling cadence. The controller stops if no board appears
+within four minutes.
+Use `--next-level-poll-seconds` and `--next-level-timeout-seconds` to adjust
+those defaults. Press Ctrl+C to stop. `--tap-interval` controls the minimum
+wait between card taps (default `0.5` seconds).
+At INFO level, the controller reads the Moves, Time, and Matches values from
+their separate HUD columns. It prints the progress bar, Moves, and Time
+together on one line when the match count, move count, or ten-second time
+bucket changes.
+The reader handles both screen layouts—with and without the Android status
+bar—by checking the two possible value-row locations. It only accepts counters
+that parse. The detected complete card grid is authoritative for the expected
+pair total, so a misread HUD denominator is corrected from the board while the
+current match count is still validated. Controller-level checks also reject
+HUD matches beyond the pairs visibly confirmed on the board, move counts beyond
+the card taps sent, and counters that move backward or make the timer increase.
+This guards against plausible
+but incorrect OCR results (for example, misreading `1/8` as `7/8`). Match
+progress remains monotonic within each level.
+The HUD parser also handles two ambiguities seen in debug output: a leading
+move-count `1` misread as `7` when that reading exceeds the move limit, and a
+timer suffix `s` misread as `5`.
+The completion summary uses a recent, consistent HUD reading when available;
+otherwise it estimates time from elapsed time and moves from card taps. If the
+results screen appears before the completed board can be observed, that screen
+is used to close out the level. Set
+`--level-time-seconds` if the game's starting timer differs from the 90-second
+fallback. Rolling time and move averages are normalized per matched pair,
+making them more comparable as later boards grow.
+Individual tap coordinates and card positions are only logged at DEBUG level.
+Completed-level summaries include a readable table of the latest five levels.
 
 ## How the solver works
 
