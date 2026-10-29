@@ -73,6 +73,7 @@ class RockLevelMonitorTests(unittest.TestCase):
         self.assertEqual(progress_counts, [0, 1, 2])
 
     def test_live_progress_refreshes_when_moves_or_time_changes(self):
+        self.monitor = RockLevelMonitor(90, self.progress_callback)
         readings = iter(
             (
                 RockHudStats(0, 30, 60, 0, 2),
@@ -83,7 +84,11 @@ class RockLevelMonitorTests(unittest.TestCase):
         with patch(
             "game_automation.games.terraminer_rock.level_monitor.RockHudDetector.detect",
             side_effect=lambda _frame: next(readings),
+        ), patch(
+            "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
+            side_effect=(0.0, 30.0, 31.0, 32.0),
         ):
+            self.monitor.start_level(observation_with_matches(0))
             for tap_count in (0, 2, 2):
                 self.monitor.observe(
                     observation_with_matches(0),
@@ -100,6 +105,48 @@ class RockLevelMonitorTests(unittest.TestCase):
         self.assertIn("Moves used  [" + "#" + "-" * 35 + "] 1/30 (3%)", second)
         self.assertIn("Time used   [" + "#" + "-" * 35 + "] 1/60s (2%)", second)
         self.assertIn("Time used   [" + "#" + "-" * 35 + "] 2/60s (3%)", third)
+
+    def test_rejects_timer_reading_that_drops_from_50_to_5(self):
+        readings = iter(
+            (
+                RockHudStats(0, 30, 50, 0, 2),
+                RockHudStats(0, 30, 5, 0, 2),
+                RockHudStats(0, 30, 49, 0, 2),
+            )
+        )
+        clock = iter((0.0, 40.0, 40.1, 41.0))
+        with patch(
+            "game_automation.games.terraminer_rock.level_monitor.RockHudDetector.detect",
+            side_effect=lambda _frame: next(readings),
+        ), patch(
+            "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
+            side_effect=lambda: next(clock),
+        ), self.assertLogs("terraminer_rock.level_monitor", level="DEBUG") as captured:
+            self.monitor.start_level(observation_with_matches(0))
+            observation = observation_with_matches(0)
+            self.monitor.observe(observation, board_frame(), 0)
+            accepted = self.monitor.last_hud_stats
+            self.monitor.observe(observation, board_frame(), 0)
+            self.monitor.observe(observation, board_frame(), 0)
+
+        self.assertEqual(accepted.seconds_remaining, 50)
+        self.assertEqual(self.monitor.last_hud_stats.seconds_remaining, 49)
+        self.assertIn("Ignoring inconsistent HUD timer 5s", "\n".join(captured.output))
+        self.assertEqual(self.progress_callback.call_count, 2)
+
+    def test_accepts_first_timer_reading_without_assuming_timer_start_time(self):
+        with patch(
+            "game_automation.games.terraminer_rock.level_monitor.RockHudDetector.detect",
+            return_value=RockHudStats(0, 30, 5, 0, 2),
+        ), patch(
+            "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
+            side_effect=(0.0, 0.1),
+        ):
+            self.monitor.start_level(observation_with_matches(0))
+            self.monitor.observe(observation_with_matches(0), board_frame(), 0)
+
+        self.assertEqual(self.monitor.last_hud_stats.seconds_remaining, 5)
+        self.progress_callback.assert_called_once()
 
     def test_ignores_hud_matches_not_confirmed_by_the_board(self):
         with patch(
@@ -132,7 +179,12 @@ class RockLevelMonitorTests(unittest.TestCase):
         with patch(
             "game_automation.games.terraminer_rock.level_monitor.RockHudDetector.detect",
             return_value=RockHudStats(2, 30, 90, 0, 2),
+        ), patch(
+            "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
+            side_effect=(0.0, 0.1),
         ), self.assertLogs("terraminer_rock.level_monitor", level="DEBUG") as captured:
+            self.monitor = RockLevelMonitor(90, self.progress_callback)
+            self.monitor.start_level(observation_with_matches(0))
             self.monitor.observe(observation_with_matches(0), board_frame(), 1)
 
         self.assertIsNone(self.monitor.last_hud_stats)
@@ -147,7 +199,12 @@ class RockLevelMonitorTests(unittest.TestCase):
         with patch(
             "game_automation.games.terraminer_rock.level_monitor.RockHudDetector.detect",
             side_effect=lambda _frame: next(readings),
+        ), patch(
+            "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
+            side_effect=(0.0, 10.0, 11.0),
         ), self.assertLogs("terraminer_rock.level_monitor", level="DEBUG") as captured:
+            self.monitor = RockLevelMonitor(90, self.progress_callback)
+            self.monitor.start_level(observation_with_matches(0))
             observation = observation_with_matches(0)
             self.monitor.observe(observation, board_frame(), 10)
             accepted = self.monitor.last_hud_stats

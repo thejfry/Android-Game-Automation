@@ -16,6 +16,7 @@ logger = logging.getLogger("terraminer_rock.level_monitor")
 
 RECENT_LEVELS_COUNT = 5
 HUD_STATS_MAX_AGE_SECONDS = 3.0
+HUD_TIMER_TOLERANCE_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ class RockLevelMonitor:
         stats = RockHudDetector.detect(frame)
         if stats is None:
             return
+        now = time.monotonic()
         if stats.expected_matches != expected_total:
             logger.debug(
                 "HUD Matches denominator was read as %d; detected board has %d "
@@ -158,9 +160,23 @@ class RockLevelMonitor:
                 previous_stats.expected_matches,
             )
             return
+        if previous_stats is not None and self._last_hud_stats_at is not None:
+            elapsed_since_previous = max(0.0, now - self._last_hud_stats_at)
+            maximum_timer_drop = elapsed_since_previous + HUD_TIMER_TOLERANCE_SECONDS
+            timer_drop = previous_stats.seconds_remaining - stats.seconds_remaining
+            if timer_drop > maximum_timer_drop:
+                logger.debug(
+                    "Ignoring inconsistent HUD timer %ds; it dropped %ds in %.1fs "
+                    "(maximum plausible drop %.1fs).",
+                    stats.seconds_remaining,
+                    timer_drop,
+                    elapsed_since_previous,
+                    maximum_timer_drop,
+                )
+                return
 
         self._last_hud_stats = stats
-        self._last_hud_stats_at = time.monotonic()
+        self._last_hud_stats_at = now
         if self._initial_seconds is None:
             self._initial_seconds = stats.seconds_remaining
         self._max_matches_seen = max(self._max_matches_seen, stats.matches_made)
