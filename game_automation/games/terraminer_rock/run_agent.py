@@ -11,6 +11,7 @@ from game_automation.games.terraminer_gold.tap_executor import TapExecutor
 from .agent import TerraminerRockAgent
 from .controller import ControllerState, TerraminerRockController
 from .perception import TerraminerRockPerception
+from .terminal_progress import LiveProgressDisplay, ProgressStreamHandler
 
 
 def main():
@@ -52,9 +53,14 @@ def main():
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
     )
     args = parser.parse_args()
+    progress_display = LiveProgressDisplay()
+    log_handler = ProgressStreamHandler(progress_display)
+    log_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=(log_handler,),
     )
 
     phone = MyPhone()
@@ -75,6 +81,7 @@ def main():
         level_time_seconds=args.level_time_seconds,
         next_level_poll_interval_seconds=args.next_level_poll_seconds,
         next_level_timeout_seconds=args.next_level_timeout_seconds,
+        progress_callback=progress_display.update,
     )
     try:
         stream.start()
@@ -89,6 +96,7 @@ def main():
     except KeyboardInterrupt:
         logging.info("Terraminer Rock automation interrupted.")
     finally:
+        progress_display.update(None)
         stream.stop()
 
 

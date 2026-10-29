@@ -40,6 +40,7 @@ class RockControllerTests(unittest.TestCase):
         self.agent = Mock()
         self.agent.process.return_value = False
         self.agent.tap_count = 0
+        self.progress_callback = Mock()
         self.perception = Mock()
         self.perception.process.return_value = BoardObservation(
             timestamp=0,
@@ -50,6 +51,7 @@ class RockControllerTests(unittest.TestCase):
             self.agent,
             self.perception,
             self.tap_executor,
+            progress_callback=self.progress_callback,
         )
 
     def test_requires_stable_face_down_board_before_play(self):
@@ -183,29 +185,23 @@ class RockControllerTests(unittest.TestCase):
         self.assertIn("No new rock board appeared", "\n".join(captured.output))
         self.perception.process.assert_not_called()
 
-    def test_logs_progress_only_when_completed_match_count_changes(self):
+    def test_live_progress_stays_unchanged_when_hud_values_are_unchanged(self):
         self.agent.process.return_value = False
         frame = board_frame()
         with patch(
             "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
             return_value=RockHudStats(0, 30, 90, 0, 2),
-        ), self.assertLogs(
-            "terraminer_rock.controller",
-            level="INFO",
-        ) as captured:
+        ):
             self.controller.process_frame(frame)
             self.controller.process_frame(frame)
             self.controller.process_frame(frame)
             self.controller.process_frame(frame)
 
-        progress_lines = [
-            line for line in captured.output if "progress:" in line
-        ]
-        self.assertEqual(len(progress_lines), 1)
-        self.assertIn("0/2 matches", progress_lines[0])
-        self.assertIn("Moves 0/30", progress_lines[0])
-        self.assertIn("Time 90s", progress_lines[0])
-        self.assertFalse(any("HUD:" in line for line in captured.output))
+        self.progress_callback.assert_called_once()
+        line = self.progress_callback.call_args.args[0]
+        self.assertIn("Moves used  [" + "-" * 36 + "] 0/30 (0%)", line)
+        self.assertIn("Time used   [" + "-" * 36 + "] 0/90s (0%)", line)
+        self.assertIn("Matches     [" + "-" * 36 + "] 0/2 (0%)", line)
 
     def test_progress_does_not_decrease_when_matched_border_is_missed_in_a_frame(self):
         def observation_with_matches(match_count):
@@ -233,10 +229,7 @@ class RockControllerTests(unittest.TestCase):
                 RockHudStats(0, 30, 90, count, 2)
                 for count in (0, 1, 0, 2, 1)
             ),
-        ), self.assertLogs(
-            "terraminer_rock.controller",
-            level="INFO",
-        ) as captured:
+        ):
             for count in (0, 1, 0, 2, 1):
                 self.controller._log_match_progress(
                     observation_with_matches(count),
@@ -244,11 +237,44 @@ class RockControllerTests(unittest.TestCase):
                 )
 
         progress_counts = [
-            int(line.split(" matches", 1)[0].rsplit(" ", 1)[-1].split("/")[0])
-            for line in captured.output
-            if "progress:" in line
+            int(
+                call.args[0]
+                .split("Matches ", 1)[1]
+                .split("] ", 1)[1]
+                .split("/", 1)[0]
+            )
+            for call in self.progress_callback.call_args_list
         ]
         self.assertEqual(progress_counts, [0, 1, 2])
+
+    def test_live_progress_refreshes_when_moves_or_time_changes(self):
+        self.agent.tap_count = 10
+        readings = iter(
+            (
+                RockHudStats(0, 30, 60, 0, 2),
+                RockHudStats(1, 30, 59, 0, 2),
+                RockHudStats(1, 30, 58, 0, 2),
+            )
+        )
+        with patch(
+            "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
+            side_effect=lambda _frame: next(readings),
+        ):
+            for _ in range(3):
+                self.controller._log_match_progress(
+                    BoardObservation(0, blank_board()),
+                    board_frame(),
+                )
+
+        self.assertEqual(self.progress_callback.call_count, 3)
+        first, second, third = (
+            call.args[0] for call in self.progress_callback.call_args_list
+        )
+        self.assertIn("Moves used  [" + "-" * 36 + "] 0/30 (0%)", first)
+        self.assertIn("Time used   [" + "-" * 36 + "] 0/60s (0%)", first)
+        self.assertIn("Moves used  [" + "#" + "-" * 35 + "] 1/30 (3%)", second)
+        self.assertIn("Time used   [" + "#" + "-" * 35 + "] 1/60s (2%)", second)
+        self.assertIn("Time used   [" + "#" + "-" * 35 + "] 2/60s (3%)", third)
 
     def test_ignores_hud_matches_not_confirmed_by_the_board(self):
         cards = tuple(
@@ -282,10 +308,7 @@ class RockControllerTests(unittest.TestCase):
         with patch(
             "game_automation.games.terraminer_rock.controller.RockHudDetector.detect",
             return_value=RockHudStats(0, 30, 90, 0, 70),
-        ), self.assertLogs(
-            "terraminer_rock.controller",
-            level="INFO",
-        ) as captured:
+        ):
             self.controller._log_match_progress(
                 BoardObservation(0, blank_board()),
                 board_frame(),
@@ -295,11 +318,20 @@ class RockControllerTests(unittest.TestCase):
             self.controller._last_hud_stats,
             RockHudStats(0, 30, 90, 0, 2),
         )
-        output = "\n".join(captured.output)
-        self.assertIn("progress:", output)
-        self.assertIn("0/2 matches", output)
-        self.assertIn("Moves 0/30", output)
-        self.assertIn("Time 90s", output)
+        self.progress_callback.assert_called_once()
+        line = self.progress_callback.call_args.args[0]
+        self.assertIn("Level 0 progress", line)
+        self.assertIn("Moves used  [" + "-" * 36 + "] 0/30 (0%)", line)
+        self.assertIn("Matches     [" + "-" * 36 + "] 0/2 (0%)", line)
+
+    def test_clears_live_progress_when_controller_leaves_playing(self):
+        self.controller.state = ControllerState.PLAYING
+        self.controller._update_live_progress("Level 1 [##--] 1/2")
+        self.progress_callback.reset_mock()
+
+        self.controller._transition(ControllerState.WAITING_FOR_COMPLETION)
+
+        self.progress_callback.assert_called_once_with(None)
 
     def test_ignores_hud_values_that_violate_tap_or_time_progress(self):
         self.agent.tap_count = 1

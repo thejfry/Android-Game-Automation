@@ -28,10 +28,19 @@ within four minutes.
 Use `--next-level-poll-seconds` and `--next-level-timeout-seconds` to adjust
 those defaults. Press Ctrl+C to stop. `--tap-interval` controls the minimum
 wait between card taps (default `0.5` seconds).
-At INFO level, the controller reads the Moves, Time, and Matches values from
-their separate HUD columns. It prints the progress bar, Moves, and Time
-together on one line when the match count, move count, or ten-second time
-bucket changes.
+While playing, the controller shows a stacked in-place display with long,
+same-scale bars for Moves used, Time used, and Matches completed. Each bar
+shows a percentage, and a final pace line reports **ON PACE** or **AT RISK**
+when move or time usage has overtaken match completion. The time bar measures
+elapsed time since the first accepted HUD reading, so its percentage can be
+compared directly with matches completed. It refreshes whenever accepted HUD
+values change—including after each move, timer tick, or match—and clears the
+display when leaving the playing state. Timestamped logs remain for controller
+state changes and level statistics. The display is enabled only
+when stderr is an interactive terminal; log output redirected to a file remains
+clean.
+The controller reads the Moves, Time, and Matches values from their separate
+HUD columns.
 The reader handles both screen layouts—with and without the Android status
 bar—by checking the two possible value-row locations. It only accepts counters
 that parse. The detected complete card grid is authoritative for the expected

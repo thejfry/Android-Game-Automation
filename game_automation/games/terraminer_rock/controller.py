@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 import logging
 import time
+from typing import Callable
 
 import numpy as np
 
@@ -16,6 +17,7 @@ from .perception import (
 )
 from .hud_detection import RockHudDetector, RockHudStats
 from .reward_detection import RewardMatch, RewardMatchKind, RewardScreenDetector
+from .terminal_progress import format_progress_line
 from game_automation.games.terraminer_gold.tap_executor import TapExecutor
 
 short_name = ".".join(__name__.split(".")[-2:])
@@ -25,7 +27,6 @@ SETTLING_SECONDS = 0.5
 REWARD_CONFIRMATION_FRAMES = 2
 BOARD_CONFIRMATION_FRAMES = 3
 REWARD_BUTTON_WAIT_SECONDS = 1.0
-PROGRESS_BAR_WIDTH = 20
 RECENT_LEVELS_COUNT = 5
 HUD_STATS_MAX_AGE_SECONDS = 3.0
 NEXT_LEVEL_POLL_INTERVAL_SECONDS = 5.0
@@ -68,6 +69,7 @@ class TerraminerRockController:
         level_time_seconds: float = 90.0,
         next_level_poll_interval_seconds: float = NEXT_LEVEL_POLL_INTERVAL_SECONDS,
         next_level_timeout_seconds: float = NEXT_LEVEL_TIMEOUT_SECONDS,
+        progress_callback: Callable[[str | None], None] | None = None,
     ):
         if settling_seconds < 0:
             raise ValueError("Settling duration must not be negative.")
@@ -88,6 +90,11 @@ class TerraminerRockController:
         self.level_time_seconds = level_time_seconds
         self.next_level_poll_interval_seconds = next_level_poll_interval_seconds
         self.next_level_timeout_seconds = next_level_timeout_seconds
+        self.progress_callback = (
+            progress_callback
+            if progress_callback is not None
+            else lambda _text: None
+        )
         self.next_level_confirmation_poll_interval_seconds = min(
             NEXT_LEVEL_CONFIRMATION_POLL_MAX_SECONDS,
             next_level_poll_interval_seconds * NEXT_LEVEL_CONFIRMATION_POLL_RATIO,
@@ -103,14 +110,13 @@ class TerraminerRockController:
         self._candidate_board_frames = 0
         self._level_started_at: float | None = None
         self._level_expected_pairs: int | None = None
+        self._level_initial_seconds: int | None = None
         self._level_number = 0
-        self._last_progress: tuple[int, int] | None = None
+        self._live_progress_text: str | None = None
         self._max_matches_seen = 0
         self._max_board_matches_seen = 0
         self._last_hud_stats: RockHudStats | None = None
         self._last_hud_stats_at: float | None = None
-        self._last_hud_move_logged: int | None = None
-        self._last_hud_time_bucket: int | None = None
         self._recent_levels: deque[LevelStats] = deque(maxlen=RECENT_LEVELS_COUNT)
         self._level_recorded = False
         logger.info("Controller state: %s.", self.state.value)
@@ -180,14 +186,13 @@ class TerraminerRockController:
         self._reset_board_candidate()
         self._level_started_at = time.monotonic()
         self._level_expected_pairs = len(observation.board.cards) // 2
+        self._level_initial_seconds = None
         self._level_recorded = False
-        self._last_progress = None
+        self._live_progress_text = None
         self._max_matches_seen = 0
         self._max_board_matches_seen = 0
         self._last_hud_stats = None
         self._last_hud_stats_at = None
-        self._last_hud_move_logged = None
-        self._last_hud_time_bucket = None
         self._level_number += 1
         self._transition(ControllerState.PLAYING)
 
@@ -324,38 +329,21 @@ class TerraminerRockController:
             return
         self._last_hud_stats = stats
         self._last_hud_stats_at = time.monotonic()
+        if self._level_initial_seconds is None:
+            self._level_initial_seconds = stats.seconds_remaining
         self._max_matches_seen = max(self._max_matches_seen, stats.matches_made)
         pairs_matched = min(self._max_matches_seen, stats.expected_matches)
-        progress = pairs_matched, stats.expected_matches
-        if progress == self._last_progress:
-            progress_changed = False
-        else:
-            progress_changed = True
-            self._last_progress = progress
-
-        time_bucket = stats.seconds_remaining // 10
-        if (
-            progress_changed
-            or stats.moves_used != self._last_hud_move_logged
-            or time_bucket != self._last_hud_time_bucket
-        ):
-            filled = round(
-                PROGRESS_BAR_WIDTH * pairs_matched / max(stats.expected_matches, 1)
-            )
-            bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
-            logger.info(
-                "Level %d progress: [%s] %d/%d matches | Moves %d/%d | "
-                "Time %ds.",
+        self._update_live_progress(
+            format_progress_line(
                 self._level_number,
-                bar,
-                pairs_matched,
-                stats.expected_matches,
                 stats.moves_used,
                 stats.move_limit,
                 stats.seconds_remaining,
+                self._level_initial_seconds or stats.seconds_remaining,
+                pairs_matched,
+                stats.expected_matches,
             )
-            self._last_hud_move_logged = stats.moves_used
-            self._last_hud_time_bucket = time_bucket
+        )
 
     def _record_completed_level(
         self,
@@ -363,6 +351,7 @@ class TerraminerRockController:
     ) -> None:
         if self._level_recorded:
             return
+        self._update_live_progress(None)
         if self._level_started_at is None:
             raise RuntimeError("Completed board has no recorded level start time.")
         elapsed = max(0.0, time.monotonic() - self._level_started_at)
@@ -498,7 +487,7 @@ class TerraminerRockController:
         self._next_level_wait_started_at = time.monotonic()
         self._last_next_level_poll_at = None
         logger.info(
-            "Level-up/ad prompt confirmed; not tapping Play Level. Checking for "
+            "Level-up/ad prompt confirmed; Checking for "
             "a stable board every %.0fs for up to %.0fs.",
             self.next_level_poll_interval_seconds,
             self.next_level_timeout_seconds,
@@ -525,10 +514,18 @@ class TerraminerRockController:
         self._candidate_board_signature = None
         self._candidate_board_frames = 0
 
+    def _update_live_progress(self, text: str | None) -> None:
+        if text == self._live_progress_text:
+            return
+        self._live_progress_text = text
+        self.progress_callback(text)
+
     def _transition(self, state: ControllerState) -> None:
         if state is self.state:
             return
         previous_state = self.state
+        if previous_state is ControllerState.PLAYING and state is not ControllerState.PLAYING:
+            self._update_live_progress(None)
         self.state = state
         logger.info(
             "Controller state: %s -> %s.",
