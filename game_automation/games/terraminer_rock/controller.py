@@ -1,8 +1,6 @@
 """Lifecycle orchestration for Terraminer Rock."""
 
 from enum import Enum
-from collections import deque
-from dataclasses import dataclass, replace
 import logging
 import time
 from typing import Callable
@@ -15,9 +13,8 @@ from .perception import (
     BoardObservation,
     TerraminerRockPerception,
 )
-from .hud_detection import RockHudDetector, RockHudStats
+from .level_monitor import RockLevelMonitor
 from .reward_detection import RewardMatch, RewardMatchKind, RewardScreenDetector
-from .terminal_progress import format_progress_line
 from game_automation.games.terraminer_gold.tap_executor import TapExecutor
 
 short_name = ".".join(__name__.split(".")[-2:])
@@ -27,21 +24,10 @@ SETTLING_SECONDS = 0.5
 REWARD_CONFIRMATION_FRAMES = 2
 BOARD_CONFIRMATION_FRAMES = 3
 REWARD_BUTTON_WAIT_SECONDS = 1.0
-RECENT_LEVELS_COUNT = 5
-HUD_STATS_MAX_AGE_SECONDS = 3.0
 NEXT_LEVEL_POLL_INTERVAL_SECONDS = 5.0
 NEXT_LEVEL_TIMEOUT_SECONDS = 240.0
 NEXT_LEVEL_CONFIRMATION_POLL_RATIO = 0.2
 NEXT_LEVEL_CONFIRMATION_POLL_MAX_SECONDS = 1.0
-
-
-@dataclass(frozen=True)
-class LevelStats:
-    level: int
-    pairs: int
-    elapsed_seconds: float
-    moves: int
-    estimated_seconds_left: float
 
 
 class ControllerState(Enum):
@@ -87,14 +73,12 @@ class TerraminerRockController:
         self.settling_seconds = settling_seconds
         self.continuous = continuous
         self.reward_button_wait_seconds = reward_button_wait_seconds
-        self.level_time_seconds = level_time_seconds
+        self.level_monitor = RockLevelMonitor(
+            level_time_seconds,
+            progress_callback,
+        )
         self.next_level_poll_interval_seconds = next_level_poll_interval_seconds
         self.next_level_timeout_seconds = next_level_timeout_seconds
-        self.progress_callback = (
-            progress_callback
-            if progress_callback is not None
-            else lambda _text: None
-        )
         self.next_level_confirmation_poll_interval_seconds = min(
             NEXT_LEVEL_CONFIRMATION_POLL_MAX_SECONDS,
             next_level_poll_interval_seconds * NEXT_LEVEL_CONFIRMATION_POLL_RATIO,
@@ -108,17 +92,6 @@ class TerraminerRockController:
         self._last_next_level_poll_at: float | None = None
         self._candidate_board_signature: tuple[int, int] | None = None
         self._candidate_board_frames = 0
-        self._level_started_at: float | None = None
-        self._level_expected_pairs: int | None = None
-        self._level_initial_seconds: int | None = None
-        self._level_number = 0
-        self._live_progress_text: str | None = None
-        self._max_matches_seen = 0
-        self._max_board_matches_seen = 0
-        self._last_hud_stats: RockHudStats | None = None
-        self._last_hud_stats_at: float | None = None
-        self._recent_levels: deque[LevelStats] = deque(maxlen=RECENT_LEVELS_COUNT)
-        self._level_recorded = False
         logger.info("Controller state: %s.", self.state.value)
 
     @property
@@ -184,16 +157,7 @@ class TerraminerRockController:
 
     def _start_level(self, observation: BoardObservation) -> None:
         self._reset_board_candidate()
-        self._level_started_at = time.monotonic()
-        self._level_expected_pairs = len(observation.board.cards) // 2
-        self._level_initial_seconds = None
-        self._level_recorded = False
-        self._live_progress_text = None
-        self._max_matches_seen = 0
-        self._max_board_matches_seen = 0
-        self._last_hud_stats = None
-        self._last_hud_stats_at = None
-        self._level_number += 1
+        self.level_monitor.start_level(observation)
         self._transition(ControllerState.PLAYING)
 
     def _process_observation(
@@ -206,9 +170,9 @@ class TerraminerRockController:
         except RuntimeError:
             self._transition(ControllerState.FAILED)
             raise
-        self._log_match_progress(observation, frame)
+        self.level_monitor.observe(observation, frame, self.agent.tap_count)
         if complete:
-            self._record_completed_level(observation)
+            self.level_monitor.record_completion(observation, self.agent.tap_count)
             self._settling_started_at = time.monotonic()
             self._transition(ControllerState.WAITING_FOR_COMPLETION)
 
@@ -257,175 +221,6 @@ class TerraminerRockController:
         self._start_level(observation)
         self._process_observation(observation, frame)
 
-    def _log_match_progress(
-        self,
-        observation: BoardObservation,
-        frame: np.ndarray,
-    ) -> None:
-        expected_total = len(observation.board.cards) // 2
-        visible_matches = sum(card.matched for card in observation.board.cards) // 2
-        self._max_board_matches_seen = max(
-            self._max_board_matches_seen,
-            visible_matches,
-        )
-        stats = RockHudDetector.detect(frame)
-        if stats is None:
-            return
-        if stats.expected_matches != expected_total:
-            logger.debug(
-                "HUD Matches denominator was read as %d; detected board has %d "
-                "pairs. Using the detected board total.",
-                stats.expected_matches,
-                expected_total,
-            )
-            stats = replace(stats, expected_matches=expected_total)
-        if stats.matches_made > expected_total:
-            logger.debug(
-                "Ignoring HUD Matches counter %d/%d; detected board has %d pairs.",
-                stats.matches_made,
-                expected_total,
-                expected_total,
-            )
-            return
-        if stats.matches_made > self._max_board_matches_seen:
-            logger.debug(
-                "Ignoring HUD Matches counter %d/%d; only %d matched pairs "
-                "have been confirmed on the board.",
-                stats.matches_made,
-                stats.expected_matches,
-                self._max_board_matches_seen,
-            )
-            return
-        tap_count = getattr(self.agent, "tap_count", None)
-        if isinstance(tap_count, int) and stats.moves_used > tap_count:
-            logger.debug(
-                "Ignoring HUD Moves counter %d/%d; only %d card taps have been sent.",
-                stats.moves_used,
-                stats.move_limit,
-                tap_count,
-            )
-            return
-        previous_stats = self._last_hud_stats
-        if previous_stats is not None and (
-            stats.moves_used < previous_stats.moves_used
-            or stats.matches_made < previous_stats.matches_made
-            or stats.seconds_remaining > previous_stats.seconds_remaining
-            or stats.move_limit != previous_stats.move_limit
-        ):
-            logger.debug(
-                "Ignoring inconsistent HUD counters %d/%d moves, %ds, %d/%d "
-                "matches; last accepted values were %d/%d, %ds, %d/%d.",
-                stats.moves_used,
-                stats.move_limit,
-                stats.seconds_remaining,
-                stats.matches_made,
-                stats.expected_matches,
-                previous_stats.moves_used,
-                previous_stats.move_limit,
-                previous_stats.seconds_remaining,
-                previous_stats.matches_made,
-                previous_stats.expected_matches,
-            )
-            return
-        self._last_hud_stats = stats
-        self._last_hud_stats_at = time.monotonic()
-        if self._level_initial_seconds is None:
-            self._level_initial_seconds = stats.seconds_remaining
-        self._max_matches_seen = max(self._max_matches_seen, stats.matches_made)
-        pairs_matched = min(self._max_matches_seen, stats.expected_matches)
-        self._update_live_progress(
-            format_progress_line(
-                self._level_number,
-                stats.moves_used,
-                stats.move_limit,
-                stats.seconds_remaining,
-                self._level_initial_seconds or stats.seconds_remaining,
-                pairs_matched,
-                stats.expected_matches,
-            )
-        )
-
-    def _record_completed_level(
-        self,
-        observation: BoardObservation | None,
-    ) -> None:
-        if self._level_recorded:
-            return
-        self._update_live_progress(None)
-        if self._level_started_at is None:
-            raise RuntimeError("Completed board has no recorded level start time.")
-        elapsed = max(0.0, time.monotonic() - self._level_started_at)
-        if observation is not None:
-            pairs = len(observation.board.cards) // 2
-        elif self._level_expected_pairs is not None:
-            pairs = self._level_expected_pairs
-        else:
-            raise RuntimeError("Completed level has no recorded pair count.")
-        hud_stats = self._last_hud_stats
-        if (
-            self._last_hud_stats_at is None
-            or time.monotonic() - self._last_hud_stats_at > HUD_STATS_MAX_AGE_SECONDS
-        ):
-            hud_stats = None
-        taps = self.agent.tap_count
-        moves = hud_stats.moves_used if hud_stats is not None else (taps + 1) // 2
-        estimated_left = (
-            float(hud_stats.seconds_remaining)
-            if hud_stats is not None
-            else max(0.0, self.level_time_seconds - elapsed)
-        )
-        stats = LevelStats(
-            self._level_number,
-            pairs,
-            elapsed,
-            moves,
-            estimated_left,
-        )
-        self._recent_levels.append(stats)
-        self._level_recorded = True
-
-        time_source = "estimated" if hud_stats is None else "HUD"
-        logger.info(
-            "Level %d complete: %s time left %.0fs of %.0fs; "
-            "%.1fs elapsed (%.2fs/match); %d moves (%.2f/match).",
-            stats.level,
-            time_source,
-            stats.estimated_seconds_left,
-            self.level_time_seconds,
-            stats.elapsed_seconds,
-            stats.elapsed_seconds / stats.pairs,
-            stats.moves,
-            stats.moves / stats.pairs,
-        )
-        average_elapsed = sum(item.elapsed_seconds for item in self._recent_levels) / len(
-            self._recent_levels
-        )
-        total_pairs = sum(item.pairs for item in self._recent_levels)
-        average_seconds_per_match = sum(
-            item.elapsed_seconds for item in self._recent_levels
-        ) / max(total_pairs, 1)
-        average_moves_per_match = sum(
-            item.moves for item in self._recent_levels
-        ) / max(total_pairs, 1)
-        logger.info(
-            "Recent %d-level stats: avg %.1fs/level, %.2fs/match, "
-            "%.2f moves/match.",
-            len(self._recent_levels),
-            average_elapsed,
-            average_seconds_per_match,
-            average_moves_per_match,
-        )
-        logger.info(" Level | Pairs | Time left | Moves")
-        logger.info("-------+-------+-----------+------")
-        for item in self._recent_levels:
-            logger.info(
-                " %5d | %5d | %6.0fs   | %5d",
-                item.level,
-                item.pairs,
-                item.estimated_seconds_left,
-                item.moves,
-            )
-
     def _advance_completion_wait(self) -> None:
         if self._settling_started_at is None:
             raise RuntimeError("WaitingForCompletion state has no start time.")
@@ -460,8 +255,8 @@ class TerraminerRockController:
         if reward_match is None:
             raise RuntimeError("Confirmed reward screen has no detected control.")
         self._reset_board_candidate()
-        if self._level_started_at is not None and not self._level_recorded:
-            self._record_completed_level(None)
+        if self.level_monitor.has_active_level and not self.level_monitor.recorded:
+            self.level_monitor.record_completion(None, self.agent.tap_count)
         if not self.continuous:
             self._transition(ControllerState.REWARD_SCREEN)
             logger.info("Reward screen confirmed; stopping without further taps.")
@@ -514,18 +309,12 @@ class TerraminerRockController:
         self._candidate_board_signature = None
         self._candidate_board_frames = 0
 
-    def _update_live_progress(self, text: str | None) -> None:
-        if text == self._live_progress_text:
-            return
-        self._live_progress_text = text
-        self.progress_callback(text)
-
     def _transition(self, state: ControllerState) -> None:
         if state is self.state:
             return
         previous_state = self.state
         if previous_state is ControllerState.PLAYING and state is not ControllerState.PLAYING:
-            self._update_live_progress(None)
+            self.level_monitor.clear_progress()
         self.state = state
         logger.info(
             "Controller state: %s -> %s.",
