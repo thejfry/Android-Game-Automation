@@ -225,7 +225,11 @@ class RockControllerTests(unittest.TestCase):
         ]
         self.agent.process.side_effect = (False, False, True)
         self.agent.tap_count = 8
+<<<<<<< HEAD
         ticks = iter((100.0, 100.0, 101.0, 112.0, 112.0, 112.0))
+=======
+        ticks = iter((100.0, 112.0, 112.0))
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
 
         with patch(
             "game_automation.games.terraminer_rock.controller.time.monotonic",

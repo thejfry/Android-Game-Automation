@@ -39,15 +39,23 @@ class RockLevelMonitorTests(unittest.TestCase):
         with patch(
             "game_automation.games.terraminer_rock.level_monitor.RockHudDetector.detect",
             return_value=RockHudStats(0, 30, 90, 0, 2),
+<<<<<<< HEAD
         ), patch(
             "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
             side_effect=(0.1, 0.2, 0.3, 1.1),
+=======
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
         ):
             for _ in range(4):
                 self.monitor.observe(observation_with_matches(0), board_frame(), 0)
 
+<<<<<<< HEAD
         self.assertEqual(self.progress_callback.call_count, 2)
         line = self.progress_callback.call_args_list[0].args[0]
+=======
+        self.progress_callback.assert_called_once()
+        line = self.progress_callback.call_args.args[0]
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
         self.assertIn("Moves used  [" + "-" * 36 + "] 0/30 (0%)", line)
         self.assertIn("Time used   [" + "-" * 36 + "] 0/90s (0%)", line)
         self.assertIn("Matches     [" + "-" * 36 + "] 0/2 (0%)", line)
@@ -60,12 +68,16 @@ class RockLevelMonitorTests(unittest.TestCase):
                 RockHudStats(0, 30, 90, count, 2)
                 for count in readings
             ),
+<<<<<<< HEAD
         ), patch(
             "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
             side_effect=(0.0, 0.1, 1.1, 2.1, 3.1, 4.1),
         ):
             self.monitor = RockLevelMonitor(90, self.progress_callback)
             self.monitor.start_level(observation_with_matches(0))
+=======
+        ):
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
             for count in readings:
                 self.monitor.observe(observation_with_matches(count), board_frame(), 0)
 
@@ -78,7 +90,11 @@ class RockLevelMonitorTests(unittest.TestCase):
             )
             for call in self.progress_callback.call_args_list
         ]
+<<<<<<< HEAD
         self.assertEqual(progress_counts, [0, 1, 1, 2])
+=======
+        self.assertEqual(progress_counts, [0, 1, 2])
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
 
     def test_live_progress_refreshes_when_moves_or_time_changes(self):
         self.monitor = RockLevelMonitor(90, self.progress_callback)
@@ -87,7 +103,10 @@ class RockLevelMonitorTests(unittest.TestCase):
                 RockHudStats(0, 30, 60, 0, 2),
                 RockHudStats(1, 30, 59, 0, 2),
                 RockHudStats(1, 30, 58, 0, 2),
+<<<<<<< HEAD
                 RockHudStats(1, 30, 58, 0, 2),
+=======
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
             )
         )
         with patch(
@@ -95,10 +114,17 @@ class RockLevelMonitorTests(unittest.TestCase):
             side_effect=lambda _frame: next(readings),
         ), patch(
             "game_automation.games.terraminer_rock.level_monitor.time.monotonic",
+<<<<<<< HEAD
             side_effect=(0.0, 0.1, 0.5, 1.1, 2.1),
         ):
             self.monitor.start_level(observation_with_matches(0))
             for tap_count in (0, 2, 2, 2):
+=======
+            side_effect=(0.0, 30.0, 31.0, 32.0),
+        ):
+            self.monitor.start_level(observation_with_matches(0))
+            for tap_count in (0, 2, 2):
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
                 self.monitor.observe(
                     observation_with_matches(0),
                     board_frame(),
@@ -112,6 +138,7 @@ class RockLevelMonitorTests(unittest.TestCase):
         self.assertIn("Moves used  [" + "-" * 36 + "] 0/30 (0%)", first)
         self.assertIn("Time used   [" + "-" * 36 + "] 0/60s (0%)", first)
         self.assertIn("Moves used  [" + "#" + "-" * 35 + "] 1/30 (3%)", second)
+<<<<<<< HEAD
         self.assertIn("Time used   [" + "#" + "-" * 35 + "] 2/60s (3%)", second)
         self.assertIn("Time used   [" + "##" + "-" * 34 + "] 3/60s (5%)", third)
 
@@ -136,6 +163,10 @@ class RockLevelMonitorTests(unittest.TestCase):
         self.assertIn("Time used   [" + "-" * 36 + "] 0/50s (0%)", lines[0])
         self.assertIn("Time used   [" + "#" + "-" * 35 + "] 1/50s (2%)", lines[1])
         self.assertIn("Time used   [" + "#" * 1 + "-" * 35 + "] 2/50s (4%)", lines[2])
+=======
+        self.assertIn("Time used   [" + "#" + "-" * 35 + "] 1/60s (2%)", second)
+        self.assertIn("Time used   [" + "#" + "-" * 35 + "] 2/60s (3%)", third)
+>>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
 
     def test_rejects_timer_reading_that_drops_from_50_to_5(self):
         readings = iter(
