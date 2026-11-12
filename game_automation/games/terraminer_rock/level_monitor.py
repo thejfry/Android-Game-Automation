@@ -17,10 +17,7 @@ logger = logging.getLogger("terraminer_rock.level_monitor")
 RECENT_LEVELS_COUNT = 5
 HUD_STATS_MAX_AGE_SECONDS = 3.0
 HUD_TIMER_TOLERANCE_SECONDS = 3.0
-<<<<<<< HEAD
 PROGRESS_UPDATE_INTERVAL_SECONDS = 1.0
-=======
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
 
 
 @dataclass(frozen=True)
@@ -56,11 +53,8 @@ class RockLevelMonitor:
         self._max_board_matches_seen = 0
         self._last_hud_stats: RockHudStats | None = None
         self._last_hud_stats_at: float | None = None
-<<<<<<< HEAD
         self._timer_value_started_at: float | None = None
         self._last_progress_update_at: float | None = None
-=======
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
         self._recent_levels: deque[LevelStats] = deque(maxlen=RECENT_LEVELS_COUNT)
 
     @property
@@ -94,11 +88,8 @@ class RockLevelMonitor:
         self._max_board_matches_seen = 0
         self._last_hud_stats = None
         self._last_hud_stats_at = None
-<<<<<<< HEAD
         self._timer_value_started_at = None
         self._last_progress_update_at = None
-=======
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
 
     def observe(
         self,
@@ -109,10 +100,7 @@ class RockLevelMonitor:
         if not self.has_active_level:
             raise RuntimeError("Cannot observe progress before a level starts.")
 
-<<<<<<< HEAD
         now = time.monotonic()
-=======
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
         expected_total = len(observation.board.cards) // 2
         visible_matches = sum(card.matched for card in observation.board.cards) // 2
         self._max_board_matches_seen = max(
@@ -120,7 +108,6 @@ class RockLevelMonitor:
             visible_matches,
         )
         stats = RockHudDetector.detect(frame)
-<<<<<<< HEAD
         if stats is not None:
             self._accept_hud_stats(stats, expected_total, tap_count, now)
         self._render_progress_if_due(now)
@@ -132,11 +119,6 @@ class RockLevelMonitor:
         tap_count: int,
         now: float,
     ) -> None:
-=======
-        if stats is None:
-            return
-        now = time.monotonic()
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
         if stats.expected_matches != expected_total:
             logger.debug(
                 "HUD Matches denominator was read as %d; detected board has %d "
@@ -209,28 +191,11 @@ class RockLevelMonitor:
 
         self._last_hud_stats = stats
         self._last_hud_stats_at = now
-<<<<<<< HEAD
         if previous_stats is None or stats.seconds_remaining < previous_stats.seconds_remaining:
             self._timer_value_started_at = now
         if self._initial_seconds is None:
             self._initial_seconds = stats.seconds_remaining
         self._max_matches_seen = max(self._max_matches_seen, stats.matches_made)
-=======
-        if self._initial_seconds is None:
-            self._initial_seconds = stats.seconds_remaining
-        self._max_matches_seen = max(self._max_matches_seen, stats.matches_made)
-        self._update_progress(
-            format_progress_line(
-                self._level_number,
-                stats.moves_used,
-                stats.move_limit,
-                stats.seconds_remaining,
-                self._initial_seconds or stats.seconds_remaining,
-                self._max_matches_seen,
-                stats.expected_matches,
-            )
-        )
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
 
     def record_completion(
         self,
@@ -282,7 +247,6 @@ class RockLevelMonitor:
         self._live_progress_text = text
         self.progress_callback(text)
 
-<<<<<<< HEAD
     def _render_progress_if_due(self, now: float) -> None:
         stats = self._last_hud_stats
         if stats is None or self._timer_value_started_at is None:
@@ -310,8 +274,6 @@ class RockLevelMonitor:
         )
         self._last_progress_update_at = now
 
-=======
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
     def _log_completion(self, stats: LevelStats, uses_hud: bool) -> None:
         time_source = "HUD" if uses_hud else "estimated"
         logger.info(

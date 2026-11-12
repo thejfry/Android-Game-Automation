@@ -37,12 +37,8 @@ def format_progress_line(
     time_percent_display = _percentage(time_percent)
     matches_percent_display = _percentage(matches_percent)
 
-<<<<<<< HEAD
     at_risk = (moves_percent > matches_percent and moves_percent > 0.25) or \
         (time_percent > matches_percent and time_percent > 0.25)
-=======
-    at_risk = moves_percent > matches_percent or time_percent > matches_percent
->>>>>>> 05b4112444080a7d35e9d26fe60113fd36035a29
     status = "AT RISK" if at_risk else "ON PACE"
     return "\n".join(
         (
