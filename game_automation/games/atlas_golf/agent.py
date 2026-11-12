@@ -23,6 +23,7 @@ except Exception:
 
 from game_automation.core.agent import BaseAgent
 from game_automation.core.events import StateBus
+from game_automation.core.tap_executor import TapExecutor
 
 DEFAULT_CLICK_OFFSETS = [3.700, 7.000, 10.050, 12.900, 15.580, 18.070, 20.460, 22.775, 24.940, 27.060]
 
@@ -41,7 +42,10 @@ class AtlasGolfAgent(BaseAgent):
         super().__init__(phone, state_bus, tick_hz=1)
         self.bbox = bbox
         x1, y1, x2, y2 = bbox
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("Tap bounding box must have positive width and height.")
         self.click_point = ((x1 + x2) // 2, (y1 + y2) // 2)
+        self.tap_executor = TapExecutor(phone, timing_jitter_fraction=0)
 
         self._first_time: float | None = None
         self._prev_time: float | None = None
@@ -134,7 +138,7 @@ class AtlasGolfAgent(BaseAgent):
                     cx, cy = self.click_point
                     try:
                         # Tap corresponding to the initial press (index 0)
-                        self.phone.tap(cx, cy)
+                        self._tap_target()
                     except Exception as e:
                         print(f"Tap failed: {e}")
                     print(f"Click {rec['index']}: Elapsed since first: {rec['elapsed']:.3f}s; since previous: {rec['gap']:.3f}s")
@@ -150,7 +154,7 @@ class AtlasGolfAgent(BaseAgent):
                         print(f"Click {rec2['index']}: Elapsed since first: {rec2['elapsed']:.3f}s; since previous: {rec2['gap']:.3f}s")
                         cx, cy = self.click_point
                         try:
-                            self.phone.tap(cx, cy)
+                            self._tap_target()
                         except Exception as e:
                             print(f"Tap failed: {e}")
                     # end session automatically after auto clicks and allow tuning
@@ -165,11 +169,19 @@ class AtlasGolfAgent(BaseAgent):
 
             cx, cy = self.click_point
             try:
-                self.phone.tap(cx, cy)
+                self._tap_target()
             except Exception as e:
                 print(f"Tap failed: {e}")
 
         print("AtlasGolfAgent input loop exiting.")
+
+    def _tap_target(self):
+        x1, y1, x2, y2 = self.bbox
+        return self.tap_executor.tap_device_point(
+            self.click_point,
+            ((x2 - x1) * 0.2, (y2 - y1) * 0.2),
+            description="Atlas Golf target",
+        )
 
     def _end_session(self):
         """Finalize the current session: print table, store session, reset state."""

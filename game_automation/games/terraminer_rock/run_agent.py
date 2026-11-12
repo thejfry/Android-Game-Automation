@@ -6,7 +6,7 @@ import time
 
 from game_automation.core.device import MyPhone
 from game_automation.core.frame_stream import FrameStream
-from game_automation.games.terraminer_gold.tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
 
 from .agent import TerraminerRockAgent
 from .controller import ControllerState, TerraminerRockController

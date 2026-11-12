@@ -1,6 +1,5 @@
 """Lifecycle orchestration for Terraminer Rock."""
 
-from enum import Enum
 import logging
 import time
 from typing import Callable
@@ -14,8 +13,12 @@ from .perception import (
     TerraminerRockPerception,
 )
 from .level_monitor import RockLevelMonitor
-from .reward_detection import RewardMatch, RewardMatchKind, RewardScreenDetector
-from game_automation.games.terraminer_gold.tap_executor import TapExecutor
+from .reward_detection import RewardMatch, RewardScreenDetector
+from game_automation.core.tap_executor import TapExecutor
+from game_automation.games.terraminer_common.controller import (
+    ControllerState,
+    TerraminerController,
+)
 
 short_name = ".".join(__name__.split(".")[-2:])
 logger = logging.getLogger(short_name)
@@ -30,18 +33,7 @@ NEXT_LEVEL_CONFIRMATION_POLL_RATIO = 0.2
 NEXT_LEVEL_CONFIRMATION_POLL_MAX_SECONDS = 1.0
 
 
-class ControllerState(Enum):
-    WAITING_FOR_BOARD = "WaitingForBoard"
-    PLAYING = "Playing"
-    WAITING_FOR_COMPLETION = "WaitingForCompletion"
-    REWARD_SCREEN = "RewardScreen"
-    ADVANCING_LEVEL = "AdvancingLevel"
-    AWAITING_NEXT_LEVEL = "AwaitingNextLevel"
-    FAILED = "Failed"
-    STOPPED = "Stopped"
-
-
-class TerraminerRockController:
+class TerraminerRockController(TerraminerController):
     """Coordinates card perception, agent actions, and reward progression."""
 
     def __init__(
@@ -56,23 +48,28 @@ class TerraminerRockController:
         next_level_poll_interval_seconds: float = NEXT_LEVEL_POLL_INTERVAL_SECONDS,
         next_level_timeout_seconds: float = NEXT_LEVEL_TIMEOUT_SECONDS,
         progress_callback: Callable[[str | None], None] | None = None,
+        level_progress_callback: Callable[[int, str], None] | None = None,
     ):
         if settling_seconds < 0:
             raise ValueError("Settling duration must not be negative.")
-        if reward_button_wait_seconds < 0:
-            raise ValueError("Reward-button wait duration must not be negative.")
         if level_time_seconds <= 0:
             raise ValueError("Level timer duration must be positive.")
         if next_level_poll_interval_seconds <= 0:
             raise ValueError("Next-level poll interval must be positive.")
         if next_level_timeout_seconds <= 0:
             raise ValueError("Next-level timeout must be positive.")
-        self.agent = agent
-        self.perception = perception
-        self.tap_executor = tap_executor
+        super().__init__(
+            agent,
+            perception,
+            tap_executor,
+            continuous,
+            reward_button_wait_seconds,
+            board_confirmation_frames=BOARD_CONFIRMATION_FRAMES,
+            reward_confirmation_frames=REWARD_CONFIRMATION_FRAMES,
+            level_progress_callback=level_progress_callback,
+        )
         self.settling_seconds = settling_seconds
-        self.continuous = continuous
-        self.reward_button_wait_seconds = reward_button_wait_seconds
+        self.play_again_description = "confirmed Rock Play Again button"
         self.level_monitor = RockLevelMonitor(
             level_time_seconds,
             progress_callback,
@@ -83,24 +80,9 @@ class TerraminerRockController:
             NEXT_LEVEL_CONFIRMATION_POLL_MAX_SECONDS,
             next_level_poll_interval_seconds * NEXT_LEVEL_CONFIRMATION_POLL_RATIO,
         )
-        self.state = ControllerState.WAITING_FOR_BOARD
         self._settling_started_at: float | None = None
-        self._advance_level_at: float | None = None
-        self._reward_screen_frames = 0
-        self._waiting_for_reward_to_clear = False
         self._next_level_wait_started_at: float | None = None
         self._last_next_level_poll_at: float | None = None
-        self._candidate_board_signature: tuple[int, int] | None = None
-        self._candidate_board_frames = 0
-        logger.info("Controller state: %s.", self.state.value)
-
-    @property
-    def finished(self) -> bool:
-        return self.state in (
-            ControllerState.REWARD_SCREEN,
-            ControllerState.FAILED,
-            ControllerState.STOPPED,
-        )
 
     def process_frame(self, frame: np.ndarray) -> None:
         if self.finished:
@@ -113,19 +95,7 @@ class TerraminerRockController:
             return
 
         reward_match = RewardScreenDetector.detect(frame)
-        if self._waiting_for_reward_to_clear:
-            if reward_match is not None:
-                return
-            self._waiting_for_reward_to_clear = False
-            self._reward_screen_frames = 0
-        if reward_match is not None:
-            self._reward_screen_frames += 1
-        else:
-            self._reward_screen_frames = 0
-        if self._reward_screen_frames >= REWARD_CONFIRMATION_FRAMES:
-            self._handle_confirmed_reward(reward_match, frame.shape[:2])
-            return
-        if self._reward_screen_frames:
+        if self._process_reward_frame(reward_match, frame.shape[:2]):
             return
 
         if self.state is ControllerState.WAITING_FOR_BOARD:
@@ -134,11 +104,6 @@ class TerraminerRockController:
             self._process_board(frame)
         elif self.state is ControllerState.WAITING_FOR_COMPLETION:
             self._advance_completion_wait()
-
-    def acknowledge_next_level(self) -> None:
-        if self.state is not ControllerState.AWAITING_NEXT_LEVEL:
-            raise RuntimeError("Can only acknowledge the next level while awaiting it.")
-        self._reset_for_next_level()
 
     def _process_board(self, frame: np.ndarray) -> None:
         try:
@@ -157,6 +122,7 @@ class TerraminerRockController:
 
     def _start_level(self, observation: BoardObservation) -> None:
         self._reset_board_candidate()
+        self._begin_level_progress()
         self.level_monitor.start_level(observation)
         self._transition(ControllerState.PLAYING)
 
@@ -233,19 +199,7 @@ class TerraminerRockController:
         if any(card.face_up for card in observation.board.cards):
             self._reset_board_candidate()
             return False
-        if signature == self._candidate_board_signature:
-            self._candidate_board_frames += 1
-        else:
-            self._candidate_board_signature = signature
-            self._candidate_board_frames = 1
-        if self._candidate_board_frames < BOARD_CONFIRMATION_FRAMES:
-            logger.debug(
-                "Waiting for stable rock board: %d/%d matching frames.",
-                self._candidate_board_frames,
-                BOARD_CONFIRMATION_FRAMES,
-            )
-            return False
-        return True
+        return self._confirm_candidate(signature)
 
     def _handle_confirmed_reward(
         self,
@@ -253,71 +207,28 @@ class TerraminerRockController:
         frame_shape: tuple[int, int],
     ) -> None:
         if reward_match is None:
-            raise RuntimeError("Confirmed reward screen has no detected control.")
-        self._reset_board_candidate()
+            super()._handle_confirmed_reward(reward_match, frame_shape)
+            return
         if self.level_monitor.has_active_level and not self.level_monitor.recorded:
             self.level_monitor.record_completion(None, self.agent.tap_count)
-        if not self.continuous:
-            self._transition(ControllerState.REWARD_SCREEN)
-            logger.info("Reward screen confirmed; stopping without further taps.")
-            return
+        super()._handle_confirmed_reward(reward_match, frame_shape)
 
-        self._transition(ControllerState.REWARD_SCREEN)
-        if reward_match.kind is RewardMatchKind.PLAY_AGAIN:
-            if reward_match.button_bounds is None:
-                raise RuntimeError("Play Again match is missing button bounds.")
-            self.tap_executor.tap_bounds(
-                reward_match.button_bounds,
-                (frame_shape[1], frame_shape[0]),
-                description="confirmed Rock Play Again button",
-            )
-            self._waiting_for_reward_to_clear = True
-            self._advance_level_at = (
-                time.monotonic() + self.reward_button_wait_seconds
-            )
-            self._transition(ControllerState.ADVANCING_LEVEL)
-            return
-
-        self._transition(ControllerState.AWAITING_NEXT_LEVEL)
+    def _on_level_up_screen(self) -> None:
         self._next_level_wait_started_at = time.monotonic()
         self._last_next_level_poll_at = None
         logger.info(
-            "Level-up/ad prompt confirmed; Checking for "
+            "Level-up/ad prompt confirmed; checking for "
             "a stable board every %.0fs for up to %.0fs.",
             self.next_level_poll_interval_seconds,
             self.next_level_timeout_seconds,
         )
 
-    def _advance_level_transition(self) -> None:
-        if self._advance_level_at is None:
-            raise RuntimeError("AdvancingLevel state has no completion deadline.")
-        if time.monotonic() < self._advance_level_at:
-            return
-        self._advance_level_at = None
-        self._reset_for_next_level()
-
     def _reset_for_next_level(self) -> None:
-        self.agent.reset_for_next_level()
-        self._reward_screen_frames = 0
+        super()._reset_for_next_level()
         self._settling_started_at = None
         self._next_level_wait_started_at = None
         self._last_next_level_poll_at = None
-        self._reset_board_candidate()
-        self._transition(ControllerState.WAITING_FOR_BOARD)
 
-    def _reset_board_candidate(self) -> None:
-        self._candidate_board_signature = None
-        self._candidate_board_frames = 0
-
-    def _transition(self, state: ControllerState) -> None:
-        if state is self.state:
-            return
-        previous_state = self.state
+    def _on_state_transition(self, previous_state, state) -> None:
         if previous_state is ControllerState.PLAYING and state is not ControllerState.PLAYING:
             self.level_monitor.clear_progress()
-        self.state = state
-        logger.info(
-            "Controller state: %s -> %s.",
-            previous_state.value,
-            state.value,
-        )

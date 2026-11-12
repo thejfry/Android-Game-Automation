@@ -5,7 +5,7 @@ from .agent import TerraminerGoldAgent
 from .perception import TerraminerBoard
 from .perception import BoardObservation
 from .solver import EAST, NORTH, SOUTH, WEST, MazeSolution, TileAction
-from .tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
 
 
 class RouteVerificationTests(unittest.TestCase):
@@ -132,7 +132,7 @@ class RouteVerificationTests(unittest.TestCase):
 
         with (
             patch(
-                "game_automation.games.terraminer_gold.tap_executor.random.uniform",
+                "game_automation.core.tap_executor.random.uniform",
                 side_effect=jitter_values,
             ),
             patch("game_automation.games.terraminer_gold.agent.time.sleep") as sleep,
