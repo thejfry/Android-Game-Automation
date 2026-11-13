@@ -1,6 +1,6 @@
 """Lifecycle orchestration for Terraminer Gold."""
 
-from enum import Enum
+from collections.abc import Callable
 import logging
 import time
 
@@ -8,9 +8,13 @@ import numpy as np
 
 from .agent import SolveResult, TerraminerGoldAgent
 from .perception import BoardNotDetectedError, BoardObservation, TerraminerGoldPerception
-from .reward_detection import RewardMatch, RewardMatchKind, RewardScreenDetector
+from .reward_detection import RewardScreenDetector
 from .solver import MazeSolution
-from .tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
+from game_automation.games.terraminer_common.controller import (
+    ControllerState,
+    TerraminerController,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +24,7 @@ BOARD_CONFIRMATION_FRAMES = 3
 REWARD_BUTTON_WAIT_SECONDS = 1.0
 
 
-class ControllerState(Enum):
-    WAITING_FOR_BOARD = "WaitingForBoard"
-    PLANNING = "Planning"
-    EXECUTING = "Executing"
-    SETTLING = "Settling"
-    VERIFYING = "Verifying"
-    WAITING_FOR_COMPLETION = "WaitingForCompletion"
-    REWARD_SCREEN = "RewardScreen"
-    ADVANCING_LEVEL = "AdvancingLevel"
-    AWAITING_NEXT_LEVEL = "AwaitingNextLevel"
-    FAILED = "Failed"
-    STOPPED = "Stopped"
-
-
-class TerraminerGoldController:
+class TerraminerGoldController(TerraminerController):
     """Coordinates perception, solving, verification, and level progression."""
 
     def __init__(
@@ -45,35 +35,24 @@ class TerraminerGoldController:
         settling_seconds: float = SETTLING_SECONDS,
         continuous: bool = False,
         reward_button_wait_seconds: float = REWARD_BUTTON_WAIT_SECONDS,
+        level_progress_callback: Callable[[int, str], None] | None = None,
     ):
         if settling_seconds < 0:
             raise ValueError("Settling duration must not be negative.")
-        if reward_button_wait_seconds < 0:
-            raise ValueError("Reward-button wait duration must not be negative.")
-        self.agent = agent
-        self.perception = perception
-        self.tap_executor = tap_executor
-        self.settling_seconds = settling_seconds
-        self.continuous = continuous
-        self.reward_button_wait_seconds = reward_button_wait_seconds
-        self.state = ControllerState.WAITING_FOR_BOARD
-        self._settling_started_at: float | None = None
-        self._advance_level_at: float | None = None
-        self._last_detection_error: str | None = None
-        self._reward_screen_frames = 0
-        self._waiting_for_reward_to_clear = False
-        self._candidate_board_signature: tuple | None = None
-        self._candidate_board_frames = 0
-        self._active_solution: MazeSolution | None = None
-        logger.info("Controller state: %s.", self.state.value)
-
-    @property
-    def finished(self) -> bool:
-        return self.state in (
-            ControllerState.REWARD_SCREEN,
-            ControllerState.FAILED,
-            ControllerState.STOPPED,
+        super().__init__(
+            agent,
+            perception,
+            tap_executor,
+            continuous,
+            reward_button_wait_seconds,
+            board_confirmation_frames=BOARD_CONFIRMATION_FRAMES,
+            reward_confirmation_frames=REWARD_CONFIRMATION_FRAMES,
+            level_progress_callback=level_progress_callback,
         )
+        self.settling_seconds = settling_seconds
+        self._settling_started_at: float | None = None
+        self._last_detection_error: str | None = None
+        self._active_solution: MazeSolution | None = None
 
     def process_frame(self, frame: np.ndarray) -> None:
         if self.finished:
@@ -83,19 +62,7 @@ class TerraminerGoldController:
             return
 
         reward_match = RewardScreenDetector.detect(frame)
-        if self._waiting_for_reward_to_clear:
-            if reward_match is not None:
-                return
-            self._waiting_for_reward_to_clear = False
-            self._reward_screen_frames = 0
-        if reward_match is not None:
-            self._reward_screen_frames += 1
-        else:
-            self._reward_screen_frames = 0
-        if self._reward_screen_frames >= REWARD_CONFIRMATION_FRAMES:
-            self._handle_confirmed_reward(reward_match, frame.shape[:2])
-            return
-        if self._reward_screen_frames:
+        if self._process_reward_frame(reward_match, frame.shape[:2]):
             return
 
         if self.state is ControllerState.WAITING_FOR_BOARD:
@@ -107,67 +74,16 @@ class TerraminerGoldController:
         elif self.state is ControllerState.WAITING_FOR_COMPLETION:
             return
 
-    def acknowledge_next_level(self) -> None:
-        if self.state is not ControllerState.AWAITING_NEXT_LEVEL:
-            raise RuntimeError(
-                "Can only acknowledge the next level while awaiting it."
-            )
-        self._reset_for_next_level()
-
-    def _handle_confirmed_reward(
-        self,
-        reward_match: RewardMatch | None,
-        frame_shape: tuple[int, int],
-    ) -> None:
-        if reward_match is None:
-            raise RuntimeError("Confirmed reward screen has no detected control.")
-        self._reset_board_candidate()
-        if not self.continuous:
-            self._transition(ControllerState.REWARD_SCREEN)
-            logger.info("Reward screen confirmed; stopping without further taps.")
-            return
-
-        self._transition(ControllerState.REWARD_SCREEN)
-        if reward_match.kind is RewardMatchKind.PLAY_AGAIN:
-            if reward_match.button_bounds is None:
-                raise RuntimeError("Play Again match is missing button bounds.")
-            self.tap_executor.tap_bounds(
-                reward_match.button_bounds,
-                (frame_shape[1], frame_shape[0]),
-                description="confirmed Play Again button",
-            )
-            self._waiting_for_reward_to_clear = True
-            self._advance_level_at = (
-                time.monotonic() + self.reward_button_wait_seconds
-            )
-            self._transition(ControllerState.ADVANCING_LEVEL)
-            logger.info(
-                "Waiting %.1f seconds before resuming board detection.",
-                self.reward_button_wait_seconds,
-            )
-            return
-
-        self._transition(ControllerState.AWAITING_NEXT_LEVEL)
-        logger.info(
-            "Ad reward panel confirmed; not tapping the panel. Finish any ad, "
-            "open the next level, then press Enter to resume board detection."
-        )
-
-    def _advance_level_transition(self) -> None:
-        if self._advance_level_at is None:
-            raise RuntimeError("AdvancingLevel state has no completion deadline.")
-        if time.monotonic() < self._advance_level_at:
-            return
-        self._advance_level_at = None
-        self._reset_for_next_level()
-
     def _reset_for_next_level(self) -> None:
-        self.agent.reset_for_next_level()
-        self._reward_screen_frames = 0
+        super()._reset_for_next_level()
         self._last_detection_error = None
         self._active_solution = None
-        self._reset_board_candidate()
-        self._transition(ControllerState.WAITING_FOR_BOARD)
+
+    def _on_level_up_screen(self) -> None:
+        logger.info(
+            "Ad reward panel confirmed; not tapping the panel. Finish any ad, "
+            "open the next puzzle, then press Enter to resume board detection."
+        )
 
     def _process_playable_board(self, frame: np.ndarray) -> None:
         try:
@@ -185,6 +101,7 @@ class TerraminerGoldController:
             return
 
         self._reset_board_candidate()
+        self._begin_level_progress()
         self._transition(ControllerState.PLANNING)
         try:
             result = self.agent.solve(
@@ -212,19 +129,7 @@ class TerraminerGoldController:
             board.goal,
             board.tile_masks,
         )
-        if signature == self._candidate_board_signature:
-            self._candidate_board_frames += 1
-        else:
-            self._candidate_board_signature = signature
-            self._candidate_board_frames = 1
-        if self._candidate_board_frames < BOARD_CONFIRMATION_FRAMES:
-            logger.debug(
-                "Waiting for a stable board: %d/%d matching frames.",
-                self._candidate_board_frames,
-                BOARD_CONFIRMATION_FRAMES,
-            )
-            return False
-        return True
+        return self._confirm_candidate(signature)
 
     def _advance_settling(self) -> None:
         if self._settling_started_at is None:
@@ -258,18 +163,3 @@ class TerraminerGoldController:
                 "attempts while waiting for the game's completion screen."
             )
         self._transition(ControllerState.WAITING_FOR_COMPLETION)
-
-    def _reset_board_candidate(self) -> None:
-        self._candidate_board_signature = None
-        self._candidate_board_frames = 0
-
-    def _transition(self, state: ControllerState) -> None:
-        if state is self.state:
-            return
-        previous_state = self.state
-        self.state = state
-        logger.info(
-            "Controller state: %s -> %s.",
-            previous_state.value,
-            state.value,
-        )

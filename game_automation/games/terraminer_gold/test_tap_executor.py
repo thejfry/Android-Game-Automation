@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from .tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
 
 
 class TapExecutorTests(unittest.TestCase):
@@ -13,7 +13,7 @@ class TapExecutorTests(unittest.TestCase):
     def test_tap_bounds_jitters_within_detected_button_before_scaling(self):
         with (
             patch(
-                "game_automation.games.terraminer_gold.tap_executor.random.randint",
+                "game_automation.core.tap_executor.random.randint",
                 side_effect=(120, 205),
             ),
         ):
@@ -34,6 +34,27 @@ class TapExecutorTests(unittest.TestCase):
                 description="invalid button",
             )
         self.phone.tap.assert_not_called()
+
+    def test_device_point_uses_bounded_position_jitter(self):
+        with patch(
+            "game_automation.core.tap_executor.random.uniform",
+            side_effect=(3.0, -4.0),
+        ):
+            position = self.executor.tap_device_point((100, 200), (5, 6))
+
+        self.assertEqual(position, (103, 196))
+        self.phone.tap.assert_called_once_with(103, 196)
+
+    def test_timing_jitter_can_be_disabled(self):
+        executor = TapExecutor(self.phone, timing_jitter_fraction=0)
+        with patch(
+            "game_automation.core.tap_executor.random.uniform",
+            return_value=0.25,
+        ) as uniform:
+            duration = executor.randomized_interval(0.25)
+
+        self.assertEqual(duration, 0.25)
+        uniform.assert_called_once_with(0.25, 0.25)
 
 
 if __name__ == "__main__":

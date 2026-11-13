@@ -1,20 +1,18 @@
 """Agent that plans and taps a route through Terraminer Gold."""
 
 import logging
-import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from .perception import BoardObservation, PORT_CONFIDENCE_THRESHOLD, TerraminerBoard
 from .solver import MazeSolution, MazeSolver
-from .tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
 
 logger = logging.getLogger(__name__)
 
 ROUTE_VERIFICATION_CONFIDENCE = 0.875
 TAP_POSITION_JITTER_FRACTION = 0.05
-TAP_INTERVAL_JITTER_FRACTION = 0.2
 
 
 @dataclass(frozen=True)
@@ -202,13 +200,7 @@ class TerraminerGoldAgent:
                     description=f"tile ({action.row}, {action.column})",
                 )
                 if self.tap_interval and tap_index + 1 < action.turns:
-                    interval_jitter = self.tap_interval * TAP_INTERVAL_JITTER_FRACTION
-                    time.sleep(
-                        random.uniform(
-                            self.tap_interval - interval_jitter,
-                            self.tap_interval + interval_jitter,
-                        )
-                    )
+                    self.tap_executor.wait_between_taps(self.tap_interval)
         logger.info("Finished sending route taps; waiting for board verification.")
 
     @staticmethod

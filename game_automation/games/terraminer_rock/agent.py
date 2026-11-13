@@ -5,7 +5,7 @@ import time
 
 from .perception import BoardObservation
 from .solver import MemorySolver
-from game_automation.games.terraminer_gold.tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +58,17 @@ class TerraminerRockAgent:
             )
             return False
 
-        self.tap_executor.tap_point(
-            card.center,
+        self.tap_executor.tap_bounds(
+            card.bounds,
             board.frame_size,
             description=f"memory card ({position[0]}, {position[1]})",
         )
         self._tapped_cards.add(position)
         self._tap_count += 1
-        self._next_tap_at = time.monotonic() + self.tap_interval
+        self._next_tap_at = (
+            time.monotonic()
+            + self.tap_executor.randomized_interval(self.tap_interval)
+        )
         logger.debug(
             "Tapped card (%d, %d); %d card taps sent and %d matches confirmed.",
             position[0],

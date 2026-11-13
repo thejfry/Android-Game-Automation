@@ -10,7 +10,7 @@ from game_automation.core.frame_stream import FrameStream
 from .agent import TerraminerGoldAgent
 from .controller import ControllerState, TerraminerGoldController
 from .perception import TerraminerGoldPerception
-from .tap_executor import TapExecutor
+from game_automation.core.tap_executor import TapExecutor
 
 
 def _coordinate(values):
