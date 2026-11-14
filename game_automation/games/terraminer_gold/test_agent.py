@@ -142,6 +142,37 @@ class RouteVerificationTests(unittest.TestCase):
         self.assertEqual(phone.tap.call_args_list, [call(154, 147), call(145, 152)])
         sleep.assert_called_once_with(0.032)
 
+    def test_planned_taps_are_sent_one_at_a_time_at_the_configured_interval(self):
+        phone = Mock()
+        phone.resolution = (300, 300)
+        tap_executor = TapExecutor(phone)
+        tap_executor.randomized_interval = Mock(return_value=0.3)
+        agent = TerraminerGoldAgent(tap_executor, tap_interval=0.3)
+        board = TerraminerBoard(
+            tile_masks=((0, 0), (0, 0)),
+            start=(0, 0),
+            goal=(1, 1),
+            bounds=(0, 0, 300, 300),
+        )
+        observation = BoardObservation(0, board, (300, 300))
+        solution = MazeSolution(
+            actions=(TileAction(0, 1, 2, EAST | WEST),),
+            path=((0, 0), (0, 1), (1, 1)),
+        )
+        agent.solver.solve = Mock(return_value=solution)
+        agent.plan(observation)
+
+        with patch(
+            "game_automation.games.terraminer_gold.agent.time.monotonic",
+            side_effect=(10.0, 10.1, 10.3, 10.4),
+        ):
+            self.assertFalse(agent.execute_next_tap())
+            self.assertFalse(agent.execute_next_tap())
+            self.assertTrue(agent.execute_next_tap())
+
+        self.assertEqual(phone.tap.call_count, 2)
+        tap_executor.randomized_interval.assert_called_once_with(0.3)
+
 
 if __name__ == "__main__":
     unittest.main()

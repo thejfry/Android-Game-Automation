@@ -2,6 +2,7 @@
 
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -25,7 +26,7 @@ class TerraminerGoldAgent:
     def __init__(
         self,
         tap_executor: TapExecutor,
-        tap_interval: float = 0.04,
+        tap_interval: float = 0.3,
         verification_attempts: int = 3,
         dry_run: bool = False,
     ):
@@ -41,6 +42,10 @@ class TerraminerGoldAgent:
         self._attempts = 0
         self._finished = False
         self._last_solution: MazeSolution | None = None
+        self._pending_taps: deque[
+            tuple[tuple[int, int], tuple[int, int], tuple[float, float], str]
+        ] = deque()
+        self._next_tap_at = 0.0
 
     @property
     def finished(self) -> bool:
@@ -50,12 +55,11 @@ class TerraminerGoldAgent:
         self._attempts = 0
         self._finished = False
         self._last_solution = None
+        self._pending_taps.clear()
+        self._next_tap_at = 0.0
 
-    def solve(
-        self,
-        observation: BoardObservation,
-        before_execution: Callable[[], None] | None = None,
-    ) -> SolveResult | None:
+    def plan(self, observation: BoardObservation) -> MazeSolution | None:
+        """Plan the route and prepare its taps for frame-by-frame execution."""
         if self._finished:
             return None
         board = observation.board
@@ -70,13 +74,15 @@ class TerraminerGoldAgent:
                     "game-level success is not independently detected."
                 )
                 self._finished = True
-                return SolveResult(self._last_solution, False)
+                return None
             if self._attempts >= self.verification_attempts:
                 logger.error(
                     "Route did not verify after %d solve attempts.",
                     self._attempts,
                 )
-                raise RuntimeError("The route did not verify after the allowed solve attempts.")
+                raise RuntimeError(
+                    "The route did not verify after the allowed solve attempts."
+                )
             logger.warning(
                 "Route is not connected yet; retrying solve (%d/%d).",
                 self._attempts + 1,
@@ -145,7 +151,7 @@ class TerraminerGoldAgent:
                 )
             self._finished = True
             self._last_solution = solution
-            return SolveResult(solution, False)
+            return solution
 
         if solution.tap_count == 0 and not self._route_has_confident_ports(board, solution):
             logger.error(
@@ -157,10 +163,62 @@ class TerraminerGoldAgent:
                 "tile-port evidence. Check the detected tile masks before continuing."
             )
 
-        if before_execution is not None:
-            before_execution()
         self._attempts += 1
         self._last_solution = solution
+        self._pending_taps = self._build_pending_taps(
+            board,
+            solution,
+            observation.frame_size,
+        )
+        self._next_tap_at = 0.0
+        logger.info(
+            "Prepared solve attempt %d/%d: route has %d tiles and %d taps.",
+            self._attempts,
+            self.verification_attempts,
+            len(solution.path),
+            solution.tap_count,
+        )
+        return solution
+
+    def execute_next_tap(self) -> bool:
+        """Send at most one planned tap; return whether route execution is done."""
+        if not self._pending_taps:
+            return True
+        if time.monotonic() < self._next_tap_at:
+            return False
+
+        point, frame_size, jitter, description = self._pending_taps.popleft()
+        self.tap_executor.tap_point(
+            point,
+            frame_size,
+            jitter,
+            description=description,
+        )
+        if self._pending_taps:
+            self._next_tap_at = time.monotonic() + (
+                self.tap_executor.randomized_interval(self.tap_interval)
+            )
+            return False
+        logger.info("Finished sending route taps; waiting for board verification.")
+        return True
+
+    def solve(
+        self,
+        observation: BoardObservation,
+        before_execution: Callable[[], None] | None = None,
+    ) -> SolveResult | None:
+        if self._finished:
+            return None
+        solution = self.plan(observation)
+        if solution is None:
+            if self._attempts and self._last_solution is not None:
+                return SolveResult(self._last_solution, False)
+            return None
+        if self.dry_run:
+            return SolveResult(solution, False)
+        if before_execution is not None:
+            before_execution()
+        board = observation.board
         logger.info(
             "Executing solve attempt %d/%d: route has %d tiles and %d taps.",
             self._attempts,
@@ -169,7 +227,34 @@ class TerraminerGoldAgent:
             solution.tap_count,
         )
         self._execute_solution(board, solution, observation.frame_size)
+        self._pending_taps.clear()
         return SolveResult(solution, True)
+
+    @staticmethod
+    def _build_pending_taps(
+        board: TerraminerBoard,
+        solution: MazeSolution,
+        frame_size: tuple[int, int],
+    ) -> deque[tuple[tuple[int, int], tuple[int, int], tuple[float, float], str]]:
+        left, top, right, bottom = board.bounds
+        cell_width = (right - left) / board.size
+        cell_height = (bottom - top) / board.size
+        pending_taps = deque()
+        for action in solution.actions:
+            point = board.center(action.row, action.column)
+            pending_taps.extend(
+                (
+                    point,
+                    frame_size,
+                    (
+                        cell_width * TAP_POSITION_JITTER_FRACTION,
+                        cell_height * TAP_POSITION_JITTER_FRACTION,
+                    ),
+                    f"tile ({action.row}, {action.column})",
+                )
+                for _ in range(action.turns)
+            )
+        return pending_taps
 
     def _execute_solution(
         self,

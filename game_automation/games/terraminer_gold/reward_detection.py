@@ -34,13 +34,19 @@ class RewardScreenDetector:
         lower_screen = frame[lower_start:, :]
         if lower_screen.size == 0:
             return None
-        hsv = cv2.cvtColor(lower_screen, cv2.COLOR_BGR2HSV)
+        button_start = round(height * 0.78)
+        button_end = round(height * 0.99)
+        button_region = frame[button_start:button_end, :]
+        button_hsv = cv2.cvtColor(button_region, cv2.COLOR_BGR2HSV)
         yellow_mask = cv2.inRange(
-            hsv,
+            button_hsv,
             np.array((14, 100, 150), dtype=np.uint8),
             np.array((40, 255, 255), dtype=np.uint8),
         )
-        button_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 5))
+        button_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (max(3, round(width * 0.026)), max(3, round(height * 0.006))),
+        )
         yellow_mask = cv2.morphologyEx(
             yellow_mask,
             cv2.MORPH_CLOSE,
@@ -53,20 +59,21 @@ class RewardScreenDetector:
         minimum_area = height * width * 0.0015
         for label in range(1, count):
             x, y, box_width, box_height, area = stats[label]
-            center_y = lower_start + centroids[label][1]
+            center_x = centroids[label][0]
+            center_y = button_start + centroids[label][1]
             aspect_ratio = box_width / max(box_height, 1)
             bottom_button = (
                 area >= minimum_area
-                and box_width >= width * 0.18
+                and box_width >= width * 0.22
                 and box_height >= height * 0.035
-                and 1.8 <= aspect_ratio <= 8.0
-                and center_y >= height * 0.78
-                and y + lower_start + box_height >= height * 0.82
+                and 2.0 <= aspect_ratio <= 6.0
+                and width * 0.12 <= center_x <= width * 0.88
+                and height * 0.82 <= center_y <= height * 0.97
             )
             if bottom_button:
                 bounds = (
                     int(x),
-                    int(y + lower_start),
+                    int(y + button_start),
                     int(box_width),
                     int(box_height),
                 )
@@ -77,6 +84,7 @@ class RewardScreenDetector:
                 )
                 return RewardMatch(RewardMatchKind.PLAY_AGAIN, bounds)
 
+        hsv = cv2.cvtColor(lower_screen, cv2.COLOR_BGR2HSV)
         panel_mask = cv2.inRange(
             hsv,
             np.array((20, 140, 190), dtype=np.uint8),

@@ -8,23 +8,14 @@ from game_automation.core.device import MyPhone
 from game_automation.core.frame_stream import FrameStream
 
 from .agent import TerraminerGoldAgent
-from .controller import ControllerState, TerraminerGoldController
+from .controller import TerraminerGoldController
 from .perception import TerraminerGoldPerception
 from game_automation.core.tap_executor import TapExecutor
 
 
-def _coordinate(values):
-    if values is None:
-        return None
-    return tuple(values)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Solve the current Terraminer Gold board.")
-    parser.add_argument("--grid-size", type=int, help="Set grid dimensions when auto-detection is incorrect.")
-    parser.add_argument("--start", nargs=2, type=int, metavar=("ROW", "COLUMN"))
-    parser.add_argument("--goal", nargs=2, type=int, metavar=("ROW", "COLUMN"))
-    parser.add_argument("--tap-interval", type=float, default=0.04)
+    parser.add_argument("--tap-interval", type=float, default=0.3)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -33,7 +24,19 @@ def main():
     parser.add_argument(
         "--continuous",
         action="store_true",
-        help="Auto-advance Play Again screens and wait for manual ad transitions.",
+        help="Auto-advance Play Again screens and detect boards after ad transitions.",
+    )
+    parser.add_argument(
+        "--next-level-poll-seconds",
+        type=float,
+        default=5.0,
+        help="Seconds between checks for a new board after an ad (default: 5).",
+    )
+    parser.add_argument(
+        "--next-level-timeout-seconds",
+        type=float,
+        default=240.0,
+        help="Stop if no new board appears after this many seconds (default: 240).",
     )
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = parser.parse_args()
@@ -45,11 +48,7 @@ def main():
     phone = MyPhone()
     phone.connect_device()
     stream = FrameStream(max_queue=1, device=phone.device)
-    perception = TerraminerGoldPerception(
-        grid_size=args.grid_size,
-        start=_coordinate(args.start),
-        goal=_coordinate(args.goal),
-    )
+    perception = TerraminerGoldPerception()
     tap_executor = TapExecutor(phone)
     agent = TerraminerGoldAgent(
         tap_executor,
@@ -61,18 +60,13 @@ def main():
         perception,
         tap_executor,
         continuous=args.continuous,
+        next_level_poll_interval_seconds=args.next_level_poll_seconds,
+        next_level_timeout_seconds=args.next_level_timeout_seconds,
     )
 
     try:
         stream.start()
         while not controller.finished:
-            if controller.state is ControllerState.AWAITING_NEXT_LEVEL:
-                input(
-                    "After any ad, open the next puzzle and press Enter to detect it "
-                    "(Ctrl+C to stop): "
-                )
-                controller.acknowledge_next_level()
-                continue
             frame = stream.get_latest_frame()
             if frame is None:
                 time.sleep(0.01)
